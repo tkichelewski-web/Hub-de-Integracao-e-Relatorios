@@ -201,6 +201,7 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
           <ol>
             <li>Capa com mês e diretoria (ou com o nome da gerência, quando o arquivo é de uma gerência só)</li>
             <li>Um slide por gerência: pontuação base, ajustes, nota de auditoria, IP final e a tabela de indicadores (gerências com muitos indicadores continuam num segundo slide)</li>
+            <li>Quando a gerência tiver pendências (status pendente, atrasada ou em andamento), um slide com a lista delas logo em seguida</li>
           </ol>
         </div>
       </div>
@@ -816,6 +817,27 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
   const itensPorLanc = {};
   itens.forEach(it => (itensPorLanc[it.lancamento_id] = itensPorLanc[it.lancamento_id] || []).push(it));
 
+  // Pendências (lancamento_pendencias) — mesmo critério da aba Pendências do sistema
+  // principal: status "pendente", "atrasad(a)" ou "andamento". Paginado de 1000 em 1000.
+  progresso(18, 'Buscando pendências...');
+  const pendPorItem = {}; // chave lancamento_id|indicador_id
+  for (let i = 0; i < ids.length; i += 10) {
+    const lote = ids.slice(i, i + 10);
+    for (let de = 0; ; de += 1000) {
+      const { data, error: e3 } = await sbSafe(() => sb.from('lancamento_pendencias').select('*')
+        .in('lancamento_id', lote)
+        .or('status.ilike.%pendente%,status.ilike.%atrasad%,status.ilike.%andamento%')
+        .range(de, de + 999));
+      if (e3) { console.warn('Pendências não carregadas:', e3.message); break; }
+      (data || []).forEach(p => {
+        if (!/pendente|atrasad|andamento/i.test(p.status || '')) return;
+        const k = p.lancamento_id + '|' + p.indicador_id;
+        (pendPorItem[k] = pendPorItem[k] || []).push(p);
+      });
+      if (!data || data.length < 1000) break;
+    }
+  }
+
   // Pesos por gerência/safra (ind_gerencia_safra) — mesma função do sistema principal
   const indsPorGer = {};
   for (let i = 0; i < lista.length; i++) {
@@ -836,8 +858,15 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
     const validos = itensL.filter(it => indsGer.find(i => i.id === it.indicador_id));
     const somaPesos = validos.reduce((s, it) => s + (indsGer.find(i => i.id === it.indicador_id).peso || 0), 0);
 
+    const pendencias = [];
     const linhas = validos.map(it => {
       const ind = indsGer.find(i => i.id === it.indicador_id);
+      // Só aponta pendência em indicador que não bateu 100% (igual ao sistema principal)
+      const pendItem = (it.pontuacao || 0) < 100 ? (pendPorItem[l.id + '|' + it.indicador_id] || []) : [];
+      pendItem.forEach(p => pendencias.push({
+        indicador: ind.nome || ('Indicador ' + it.indicador_id),
+        nome: p.nome || '', cargo: p.cargo || '', matricula: p.matricula || '', status: p.status || ''
+      }));
       let previsto = '—', realizado = '—';
       if (ind.tipo === 'previsto_realizado') { previsto = fmtNum(it.previsto); realizado = fmtNum(it.realizado); }
       else if (ind.tipo === 'nota') realizado = fmtNum(it.nota);
@@ -848,7 +877,8 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
         previsto, realizado,
         ating: it.pontuacao || 0,
         peso: ind.peso || 0,
-        contrib: somaPesos > 0 ? (it.pontuacao || 0) * (ind.peso || 0) / somaPesos : 0
+        contrib: somaPesos > 0 ? (it.pontuacao || 0) * (ind.peso || 0) / somaPesos : 0,
+        pend: pendItem.length
       };
     }).sort((a, b) => (a.bloco || '').localeCompare(b.bloco || '', 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR'));
 
@@ -879,6 +909,9 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
       ajusteTexto: partesAj.join('  |  '),
       pesos: { wPG, wMD, wAUD },
       linhas,
+      pendencias: pendencias.sort((a, b) =>
+        (/ATRAS/.test(normaliza(b.status)) - /ATRAS/.test(normaliza(a.status))) ||
+        a.indicador.localeCompare(b.indicador, 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR')),
       pgTabela: linhas.reduce((s, r) => s + r.contrib, 0)
     };
   });
@@ -893,7 +926,8 @@ const COR = {
   maximo: '5B3A8E', meta: '07583C', minimo: 'B7860B', atencao: 'C2410C'
 };
 const FONTE = 'Arial';
-const LINHAS_POR_SLIDE = 10; // 10 linhas + cabeçalho + total cabem acima do rodapé
+const LINHAS_POR_SLIDE = 12; // 12 linhas + cabeçalho + total cabem acima do rodapé
+const PEND_POR_SLIDE = 16;   // linhas por slide de pendências
 
 function statusIP(v) {
   if (v >= 100) return { label: 'Máximo', cor: COR.maximo };
@@ -942,31 +976,30 @@ function cabecalhoGerencia(pptx, s, g, info, continuacao) {
   s.slideNumber = { x: 12.3, y: 7.05, w: 0.6, h: 0.3, fontFace: FONTE, fontSize: 9, color: COR.muted, align: 'right' };
 }
 
+// Cards compactos: rótulo em cima, valor à esquerda e detalhe à direita (0,8 pol de altura)
+const CARD_Y = 1.25, CARD_H = 0.8, TABELA_Y = 2.25;
+
 function cardKPI(pptx, s, x, w, titulo, valor, detalhe, corValor) {
-  const y = 1.35, h = 1.35;
-  s.addShape(pptx.ShapeType.rect, { x, y, w, h, fill: { color: COR.fundoCard }, line: { color: COR.linha, width: 0.75 } });
-  s.addShape(pptx.ShapeType.rect, { x, y, w: 0.07, h, fill: { color: COR.verde }, line: { color: COR.verde } });
-  s.addText(titulo, { x: x + 0.2, y: y + 0.1, w: w - 0.3, h: 0.3, fontFace: FONTE, fontSize: 11, bold: true, color: COR.muted, margin: 0 });
-  s.addText(valor, { x: x + 0.2, y: y + 0.4, w: w - 0.3, h: 0.5, fontFace: FONTE, fontSize: 26, bold: true, color: corValor || COR.tinta, margin: 0, valign: 'middle' });
-  s.addText(detalhe, { x: x + 0.2, y: y + 0.92, w: w - 0.3, h: 0.36, fontFace: FONTE, fontSize: 8.5, color: COR.muted, margin: 0, valign: 'top', fit: 'shrink' });
+  s.addShape(pptx.ShapeType.rect, { x, y: CARD_Y, w, h: CARD_H, fill: { color: COR.fundoCard }, line: { color: COR.linha, width: 0.75 } });
+  s.addShape(pptx.ShapeType.rect, { x, y: CARD_Y, w: 0.06, h: CARD_H, fill: { color: COR.verde }, line: { color: COR.verde } });
+  s.addText(titulo, { x: x + 0.15, y: CARD_Y + 0.05, w: w - 0.25, h: 0.22, fontFace: FONTE, fontSize: 9, bold: true, color: COR.muted, margin: 0 });
+  s.addText(valor, { x: x + 0.15, y: CARD_Y + 0.29, w: 1.05, h: 0.44, fontFace: FONTE, fontSize: 20, bold: true, color: corValor || COR.tinta, margin: 0, valign: 'middle' });
+  s.addText(detalhe, { x: x + 1.22, y: CARD_Y + 0.27, w: w - 1.32, h: 0.48, fontFace: FONTE, fontSize: 7.5, color: COR.muted, margin: 0, valign: 'middle', fit: 'shrink' });
 }
 
 function cardIP(pptx, s, g) {
-  const x = 9.65, y = 1.35, w = 3.18, h = 1.35;
+  const x = 9.65, w = 3.18;
   const st = statusIP(g.ip);
-  s.addShape(pptx.ShapeType.rect, { x, y, w, h, fill: { color: st.cor }, line: { color: st.cor } });
-  s.addText('IP FINAL', { x: x + 0.2, y: y + 0.1, w: w - 0.4, h: 0.3, fontFace: FONTE, fontSize: 11, bold: true, color: 'FFFFFF', margin: 0 });
-  s.addText(fmt(g.ip), { x: x + 0.2, y: y + 0.35, w: w - 0.4, h: 0.7, fontFace: FONTE, fontSize: 40, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle' });
-  s.addText(st.label, { x: x + 0.2, y: y + 1.0, w: w - 0.4, h: 0.28, fontFace: FONTE, fontSize: 12, bold: true, color: 'FFFFFF', margin: 0 });
+  s.addShape(pptx.ShapeType.rect, { x, y: CARD_Y, w, h: CARD_H, fill: { color: st.cor }, line: { color: st.cor } });
+  s.addText('IP FINAL', { x: x + 0.15, y: CARD_Y + 0.05, w: 1.5, h: 0.22, fontFace: FONTE, fontSize: 9, bold: true, color: 'FFFFFF', margin: 0 });
+  s.addText(fmt(g.ip), { x: x + 0.15, y: CARD_Y + 0.25, w: 1.6, h: 0.5, fontFace: FONTE, fontSize: 26, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle' });
+  s.addText(st.label, { x: x + 1.75, y: CARD_Y + 0.25, w: w - 1.85, h: 0.5, fontFace: FONTE, fontSize: 11, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle', align: 'right' });
 }
 
 function tabelaIndicadores(s, linhasPagina, g, ultimaPagina) {
-  const hdr = t => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'center' } });
-  const rows = [[
-    { text: 'Bloco', options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'left' } },
-    { text: 'Indicador', options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'left' } },
-    hdr('Previsto'), hdr('Realizado / Nota'), hdr('Atingimento'), hdr('Peso'), hdr('Pontos')
-  ]];
+  const hdr = (t, al = 'center') => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: al } });
+  const rows = [[hdr('Bloco', 'left'), hdr('Indicador', 'left'), hdr('Previsto'), hdr('Realizado / Nota'),
+                 hdr('Atingimento'), hdr('Peso'), hdr('Pontos'), hdr('Pendências')]];
   linhasPagina.forEach((r, i) => {
     const fill = { color: i % 2 ? COR.zebra : 'FFFFFF' };
     const corAt = r.ating >= 100 ? COR.verde : COR.atencao;
@@ -977,22 +1010,66 @@ function tabelaIndicadores(s, linhasPagina, g, ultimaPagina) {
       { text: r.realizado, options: { fill, align: 'center' } },
       { text: fmt(r.ating) + '%', options: { fill, align: 'center', bold: true, color: corAt } },
       { text: fmtNum(r.peso), options: { fill, align: 'center' } },
-      { text: fmt(r.contrib, 2), options: { fill, align: 'center' } }
+      { text: fmt(r.contrib, 2), options: { fill, align: 'center' } },
+      { text: r.pend ? String(r.pend) : '—', options: { fill, align: 'center', bold: !!r.pend, color: r.pend ? COR.atencao : COR.muted } }
     ]);
   });
   if (ultimaPagina) {
     const f = { color: COR.totalFill };
+    const totPend = g.pendencias.length;
     rows.push([
       { text: 'Pontuação da gerência', options: { fill: f, bold: true, colspan: 6, align: 'right' } },
-      { text: fmt(g.pg, 2), options: { fill: f, bold: true, align: 'center', color: COR.verde } }
+      { text: fmt(g.pg, 2), options: { fill: f, bold: true, align: 'center', color: COR.verde } },
+      { text: totPend ? String(totPend) : '—', options: { fill: f, bold: true, align: 'center', color: totPend ? COR.atencao : COR.muted } }
     ]);
   }
   s.addTable(rows, {
-    x: 0.5, y: 2.95, w: 12.33,
-    colW: [1.6, 4.4, 1.15, 1.45, 1.35, 0.95, 1.43],
+    x: 0.5, y: TABELA_Y, w: 12.33,
+    colW: [1.45, 4.15, 1.0, 1.3, 1.2, 0.8, 1.13, 1.3],
     rowH: 0.32, fontFace: FONTE, fontSize: 10, color: COR.tinta, valign: 'middle',
     border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6]
   });
+}
+
+function corStatusPend(st) {
+  const n = normaliza(st);
+  if (/ATRAS/.test(n)) return COR.atencao;
+  return COR.minimo; // pendente / em andamento
+}
+
+// Slide(s) com a lista do que está pendente na gerência
+function slidesPendencias(pptx, g, info) {
+  if (!g.pendencias.length) return;
+  const nAtras = g.pendencias.filter(p => /ATRAS/.test(normaliza(p.status))).length;
+  for (let i = 0; i < g.pendencias.length; i += PEND_POR_SLIDE) {
+    const pag = g.pendencias.slice(i, i + PEND_POR_SLIDE);
+    const s = pptx.addSlide();
+    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — pendências' }, info, i > 0);
+    s.addText([
+      { text: `${g.pendencias.length} pendência(s)`, options: { bold: true, color: COR.atencao } },
+      { text: `   |   ${nAtras} atrasada(s)   |   ${g.pendencias.length - nAtras} pendente(s) / em andamento`, options: { color: COR.muted } }
+    ], { x: 0.5, y: 1.22, w: 12.33, h: 0.35, fontFace: FONTE, fontSize: 12, margin: 0, valign: 'middle' });
+
+    const hdr = t => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde } } });
+    const rows = [[hdr('Indicador'), hdr('Pendência (pessoa / ação)'), hdr('Cargo / Responsável'), hdr('Matrícula / Nº'),
+                   { text: 'Status', options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'center' } }]];
+    pag.forEach((p, k) => {
+      const fill = { color: k % 2 ? COR.zebra : 'FFFFFF' };
+      rows.push([
+        { text: p.indicador, options: { fill, color: COR.muted } },
+        { text: p.nome || '—', options: { fill } },
+        { text: p.cargo || '—', options: { fill } },
+        { text: p.matricula || '—', options: { fill } },
+        { text: p.status || '—', options: { fill, align: 'center', bold: true, color: corStatusPend(p.status) } }
+      ]);
+    });
+    s.addTable(rows, {
+      x: 0.5, y: 1.65, w: 12.33,
+      colW: [3.0, 4.13, 2.4, 1.4, 1.4],
+      rowH: 0.3, fontFace: FONTE, fontSize: 9.5, color: COR.tinta, valign: 'middle',
+      border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6]
+    });
+  }
 }
 
 function slidesGerencia(pptx, g, info) {
@@ -1007,7 +1084,7 @@ function slidesGerencia(pptx, g, info) {
     const { wPG, wMD, wAUD } = g.pesos;
     const pct = w => Math.round(w * 100) + '%';
     cardKPI(pptx, s, 0.5, 2.95, 'Pontuação base', fmt(g.base),
-      `Gerência ${fmt(g.pg)} × ${pct(wPG)} + Diretoria ${fmt(g.mdVal)} × ${pct(wMD)} + Auditoria ${fmt(g.aud)} × ${pct(wAUD)}`);
+      `Ger. ${fmt(g.pg)} × ${pct(wPG)} + Dir. ${fmt(g.mdVal)} × ${pct(wMD)} + Aud. ${fmt(g.aud)} × ${pct(wAUD)}`);
     cardKPI(pptx, s, 3.57, 2.95, 'Ajustes', (g.aj > 0 ? '+' : '') + fmt(g.aj), g.ajusteTexto,
       g.aj >= 0 ? COR.verde : COR.atencao);
     cardKPI(pptx, s, 6.64, 2.85, 'Nota de auditoria', fmt(g.aud), `Peso de ${pct(wAUD)} no índice`);
@@ -1015,13 +1092,15 @@ function slidesGerencia(pptx, g, info) {
 
     if (!pag.length) {
       s.addText('Nenhum indicador lançado para esta gerência no mês.', {
-        x: 0.5, y: 3.3, w: 12.33, h: 0.6, fontFace: FONTE, fontSize: 14, color: COR.muted, align: 'center',
+        x: 0.5, y: TABELA_Y + 0.3, w: 12.33, h: 0.6, fontFace: FONTE, fontSize: 14, color: COR.muted, align: 'center',
         fill: { color: COR.zebra }
       });
     } else {
       tabelaIndicadores(s, pag, g, idx === paginas.length - 1);
     }
   });
+
+  slidesPendencias(pptx, g, info);
 }
 
 function novoPptx(titulo) {
