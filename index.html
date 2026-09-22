@@ -91,6 +91,22 @@ main.grade{max-width:1280px;margin:0 auto;padding:24px;display:grid;grid-templat
 .filtros .campo-dir{grid-column:1 / -1}
 .opcao{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0 16px;cursor:pointer}
 .opcao input{width:18px;height:18px;accent-color:var(--verde)}
+.ger-ferramentas{display:flex;gap:6px;margin-bottom:6px}
+.ger-ferramentas input{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--linha);border-radius:6px}
+.btn-mini{padding:6px 10px;font-size:13px}
+.ger-lista{border:1px solid var(--linha);border-radius:6px;max-height:230px;overflow:auto;background:#fff}
+.ger-lista label{display:flex;flex-direction:row;align-items:center;gap:8px;font-weight:500;color:var(--tinta);padding:7px 10px;border-bottom:1px solid #EEF3EA;font-size:14px;cursor:pointer}
+.ger-lista label:last-child{border-bottom:none}
+.ger-lista label:hover{background:var(--lima-suave)}
+.ger-lista input{width:17px;height:17px;accent-color:var(--verde);flex-shrink:0}
+.ger-lista .g-nome{flex:1;min-width:0}
+.ger-lista .g-uni{color:var(--muted);font-size:12.5px}
+.ger-lista .g-ip{font-weight:700;font-variant-numeric:tabular-nums;font-size:13px}
+.ger-lista .vazio{margin:0;padding:10px;color:var(--muted);font-size:13px}
+fieldset.modo{border:none;margin:4px 0 12px;padding:0}
+fieldset.modo legend{font-size:13px;font-weight:600;color:var(--muted);padding:0;margin-bottom:4px}
+fieldset.modo label{display:flex;align-items:center;gap:8px;font-size:14px;padding:3px 0;cursor:pointer}
+fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
 .resumo-filtro{background:var(--fundo);border-radius:var(--raio);padding:12px 14px;font-size:14px;margin-bottom:16px;min-height:46px}
 .resumo-filtro strong{color:var(--verde)}
 .progresso{margin-top:14px;display:none}
@@ -155,6 +171,20 @@ main.grade{max-width:1280px;margin:0 auto;padding:24px;display:grid;grid-templat
           <div class="campo"><label for="f-mes">Mês</label><select id="f-mes" onchange="atualizarResumoFiltro()"></select></div>
           <div class="campo campo-dir"><label for="f-dir">Diretoria</label><select id="f-dir" onchange="atualizarResumoFiltro()"></select></div>
         </div>
+        <div class="campo">
+          <label for="f-ger-busca">Gerências</label>
+          <div class="ger-ferramentas">
+            <input id="f-ger-busca" type="search" placeholder="Buscar gerência..." oninput="filtrarListaGer()">
+            <button class="btn btn-sec btn-mini" onclick="marcarGer(true)">Marcar todas</button>
+            <button class="btn btn-sec btn-mini" onclick="marcarGer(false)">Nenhuma</button>
+          </div>
+          <div class="ger-lista" id="f-ger-lista"><p class="vazio">Selecione safra e mês.</p></div>
+        </div>
+        <fieldset class="modo">
+          <legend>Formato do arquivo</legend>
+          <label><input type="radio" name="f-modo" value="unico" checked onchange="atualizarResumoSelecao()"> Um arquivo com todas as gerências marcadas</label>
+          <label><input type="radio" name="f-modo" value="separado" onchange="atualizarResumoSelecao()"> Um arquivo para cada gerência</label>
+        </fieldset>
         <label class="opcao"><input type="checkbox" id="f-ordem-ip" checked> Ordenar gerências pelo IP (maior primeiro) dentro de cada diretoria</label>
 
         <div class="resumo-filtro" id="resumo-filtro" aria-live="polite">Selecione safra e mês.</div>
@@ -169,7 +199,7 @@ main.grade{max-width:1280px;margin:0 auto;padding:24px;display:grid;grid-templat
         <div class="estrutura-slides">
           O arquivo terá:
           <ol>
-            <li>Capa com mês e diretoria</li>
+            <li>Capa com mês e diretoria (ou com o nome da gerência, quando o arquivo é de uma gerência só)</li>
             <li>Um slide por gerência: pontuação base, ajustes, nota de auditoria, IP final e a tabela de indicadores (gerências com muitos indicadores continuam num segundo slide)</li>
           </ol>
         </div>
@@ -624,30 +654,108 @@ function onSafraChange() {
 }
 
 let _resumoSeq = 0;
+let _gerDisponiveis = [];          // [{id, nome, uni, dir, ip}] com lançamento no mês/diretoria
+const _gerSelecionadas = new Set(); // ids marcados
+
 async function atualizarResumoFiltro() {
   const box = document.getElementById('resumo-filtro');
+  const listaEl = document.getElementById('f-ger-lista');
   const mes = document.getElementById('f-mes').value;
   if (!mes) { box.textContent = 'Selecione safra e mês.'; return; }
   const dirId = parseInt(document.getElementById('f-dir').value) || 0;
   const seq = ++_resumoSeq;
   box.innerHTML = '<span class="spinner" style="color:var(--verde)"></span> Consultando lançamentos...';
+  listaEl.innerHTML = '<p class="vazio">Carregando...</p>';
   const { data, error } = await sbSafe(() =>
-    sb.from('lancamentos').select('id,gerencia_id,indice_prevencao,gerencias(diretoria_id)')
+    sb.from('lancamentos').select('id,gerencia_id,indice_prevencao,gerencias(nome,diretoria_id,diretorias(nome),unidades(nome))')
       .or(`mes.eq.${mes},periodo.eq.${mes}`)
   );
   if (seq !== _resumoSeq) return; // o usuário já trocou o filtro
-  if (error) { box.textContent = 'Não foi possível consultar o banco: ' + error.message; return; }
+  if (error) { box.textContent = 'Não foi possível consultar o banco: ' + error.message; listaEl.innerHTML = ''; return; }
   let lista = (data || []).filter(l => l.gerencias);
   if (dirId) lista = lista.filter(l => l.gerencias.diretoria_id === dirId);
-  const nGer = new Set(lista.map(l => l.gerencia_id)).size;
+
+  // Um item por gerência (se houver lançamento duplicado, fica o de maior id)
+  const porGer = {};
+  lista.forEach(l => { if (!porGer[l.gerencia_id] || l.id > porGer[l.gerencia_id].id) porGer[l.gerencia_id] = l; });
+  _gerDisponiveis = Object.values(porGer).map(l => ({
+    id: l.gerencia_id, nome: l.gerencias.nome, uni: l.gerencias.unidades?.nome || '',
+    dir: l.gerencias.diretorias?.nome || '', ip: l.indice_prevencao || 0
+  })).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+
+  _gerSelecionadas.clear();
+  _gerDisponiveis.forEach(g => _gerSelecionadas.add(g.id));
+  document.getElementById('f-ger-busca').value = '';
+  renderListaGer();
+  atualizarResumoSelecao();
+}
+
+function renderListaGer() {
+  const el = document.getElementById('f-ger-lista');
+  if (!_gerDisponiveis.length) { el.innerHTML = '<p class="vazio">Nenhuma gerência com lançamento neste mês.</p>'; return; }
+  el.innerHTML = _gerDisponiveis.map(g => {
+    const cor = statusIP(g.ip).cor;
+    return `<label data-busca="${normaliza(g.nome + ' ' + g.uni + ' ' + g.dir)}">
+      <input type="checkbox" value="${g.id}" ${_gerSelecionadas.has(g.id) ? 'checked' : ''} onchange="onGerCheck(this)">
+      <span class="g-nome">${g.nome} <span class="g-uni">${g.uni}</span></span>
+      <span class="g-ip" style="color:#${cor}">${fmt(g.ip)}</span>
+    </label>`;
+  }).join('');
+}
+
+function onGerCheck(chk) {
+  const id = parseInt(chk.value);
+  chk.checked ? _gerSelecionadas.add(id) : _gerSelecionadas.delete(id);
+  atualizarResumoSelecao();
+}
+
+function filtrarListaGer() {
+  const termo = normaliza(document.getElementById('f-ger-busca').value);
+  document.querySelectorAll('#f-ger-lista label').forEach(l => {
+    l.style.display = !termo || l.dataset.busca.includes(termo) ? '' : 'none';
+  });
+}
+
+// Marca/desmarca só as gerências visíveis (respeita a busca)
+function marcarGer(valor) {
+  document.querySelectorAll('#f-ger-lista label').forEach(l => {
+    if (l.style.display === 'none') return;
+    const chk = l.querySelector('input');
+    chk.checked = valor;
+    const id = parseInt(chk.value);
+    valor ? _gerSelecionadas.add(id) : _gerSelecionadas.delete(id);
+  });
+  atualizarResumoSelecao();
+}
+
+function modoArquivo() {
+  return document.querySelector('input[name="f-modo"]:checked')?.value || 'unico';
+}
+
+function atualizarResumoSelecao() {
+  const box = document.getElementById('resumo-filtro');
+  const btn = document.getElementById('btn-gerar');
+  const mes = document.getElementById('f-mes').value;
   const nomeMes = nomeDoMes(mes);
-  if (!nGer) {
+  const marcadas = _gerDisponiveis.filter(g => _gerSelecionadas.has(g.id));
+  const n = marcadas.length;
+  if (!_gerDisponiveis.length) {
     box.innerHTML = `Nenhuma gerência com lançamento em <strong>${nomeMes}</strong> para este filtro. Importe os dados primeiro.`;
+    btn.disabled = true; btn.textContent = 'Gerar PowerPoint (.pptx)';
     return;
   }
-  const media = lista.reduce((s, l) => s + (l.indice_prevencao || 0), 0) / lista.length;
-  box.innerHTML = `<strong>${nGer}</strong> gerência(s) com lançamento em <strong>${nomeMes}</strong>. ` +
-    `IP médio: <strong>${fmt(media)}</strong>. A apresentação terá ${nGer + 1} slide(s) ou mais.`;
+  if (!n) {
+    box.innerHTML = 'Marque ao menos uma gerência.';
+    btn.disabled = true; btn.textContent = 'Gerar PowerPoint (.pptx)';
+    return;
+  }
+  const media = marcadas.reduce((s, g) => s + g.ip, 0) / n;
+  const separado = modoArquivo() === 'separado' && n > 1;
+  box.innerHTML = `<strong>${n}</strong> de ${_gerDisponiveis.length} gerência(s) marcada(s) em <strong>${nomeMes}</strong>. ` +
+    `IP médio das marcadas: <strong>${fmt(media)}</strong>. ` +
+    (separado ? `Serão baixados <strong>${n} arquivos</strong>, um por gerência.` : `Será baixado <strong>1 arquivo</strong>.`);
+  btn.disabled = false;
+  btn.textContent = separado ? `Gerar ${n} PowerPoints (.pptx)` : 'Gerar PowerPoint (.pptx)';
 }
 
 function nomeDoMes(mesVal) {
@@ -676,7 +784,7 @@ function progresso(pct, texto) {
   document.getElementById('progresso-texto').textContent = texto;
 }
 
-async function coletarDadosApresentacao(safraId, mes, dirId) {
+async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
   progresso(5, 'Buscando lançamentos do mês...');
   const { data: lancs, error } = await sbSafe(() =>
     sb.from('lancamentos')
@@ -687,6 +795,7 @@ async function coletarDadosApresentacao(safraId, mes, dirId) {
 
   let lista = (lancs || []).filter(l => l.gerencias);
   if (dirId) lista = lista.filter(l => l.gerencias.diretoria_id === dirId);
+  if (gerIds && gerIds.length) lista = lista.filter(l => gerIds.includes(l.gerencia_id));
 
   // Se houver mais de um lançamento da mesma gerência no mês, fica o mais recente (maior id)
   const porGer = {};
@@ -800,10 +909,13 @@ function slideCapa(pptx, info) {
   s.addText('ÍNDICE DE PREVENÇÃO - VIDAS', {
     x: 1.15, y: 2.2, w: 11.5, h: 1.1, fontFace: FONTE, fontSize: 44, bold: true, color: 'FFFFFF', valign: 'middle', margin: 0
   });
-  s.addText(`${info.mesNome}  •  ${info.dirNome}`, {
+  s.addText(`${info.mesNome}  •  ${info.gerNome || info.dirNome}`, {
     x: 1.15, y: 3.3, w: 11.5, h: 0.7, fontFace: FONTE, fontSize: 26, color: COR.lima, valign: 'middle', margin: 0
   });
-  s.addText(`Safra ${info.safraNome}  •  ${info.nGer} gerência(s)  •  IP médio ${fmt(info.media)}`, {
+  const linha3 = info.gerNome
+    ? `Safra ${info.safraNome}  •  ${info.dirNome}${info.uniNome ? '  •  Unidade ' + info.uniNome : ''}`
+    : `Safra ${info.safraNome}  •  ${info.nGer} gerência(s)  •  IP médio ${fmt(info.media)}`;
+  s.addText(linha3, {
     x: 1.15, y: 4.0, w: 11.5, h: 0.5, fontFace: FONTE, fontSize: 15, color: 'D9EAD3', valign: 'middle', margin: 0
   });
   s.addText('SSMA — Usina Santa Adélia', {
@@ -912,19 +1024,34 @@ function slidesGerencia(pptx, g, info) {
   });
 }
 
+function novoPptx(titulo) {
+  const pptx = new PptxGenJS();
+  pptx.layout = 'LAYOUT_WIDE'; // 13,33 x 7,5 pol (16:9)
+  pptx.author = 'SSMA';
+  pptx.company = 'Usina Santa Adélia — SSMA';
+  pptx.title = titulo;
+  return pptx;
+}
+
+const slugArq = t => normaliza(t).replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+const pausa = ms => new Promise(r => setTimeout(r, ms));
+
 async function gerarPowerPoint() {
   const btn = document.getElementById('btn-gerar');
   const safraId = parseInt(document.getElementById('f-safra').value) || 0;
   const mes = document.getElementById('f-mes').value;
   const dirId = parseInt(document.getElementById('f-dir').value) || 0;
+  const gerIds = _gerDisponiveis.filter(g => _gerSelecionadas.has(g.id)).map(g => g.id);
   if (!safraId || !mes) { alert('Selecione safra e mês.'); return; }
+  if (!gerIds.length) { alert('Marque ao menos uma gerência.'); return; }
   if (typeof PptxGenJS === 'undefined') { alert('A biblioteca PptxGenJS não carregou. Verifique a conexão e recarregue a página.'); return; }
 
+  const textoBtn = btn.textContent;
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Gerando...';
   try {
-    const dados = await coletarDadosApresentacao(safraId, mes, dirId);
+    const dados = await coletarDadosApresentacao(safraId, mes, dirId, gerIds);
     if (!dados.length) {
-      progresso(100, 'Nenhuma gerência com lançamento para esse filtro. Importe os dados e tente de novo.');
+      progresso(100, 'Nenhuma das gerências marcadas tem lançamento nesse mês.');
       return;
     }
 
@@ -936,36 +1063,61 @@ async function gerarPowerPoint() {
 
     const safra = safrasData.find(s => s.id === safraId);
     const dir = estrutura.diretorias.find(d => d.id === dirId);
-    const info = {
-      mesNome: nomeDoMes(mes),
-      dirNome: dir ? dir.nome : 'Todas as Diretorias',
-      safraNome: safra ? safra.nome : '',
-      nGer: dados.length,
-      media: dados.reduce((s, g) => s + g.ip, 0) / dados.length
-    };
+    const mesNome = nomeDoMes(mes);
+    const safraNome = safra ? safra.nome : '';
 
-    progresso(80, 'Montando os slides...');
-    const pptx = new PptxGenJS();
-    pptx.layout = 'LAYOUT_WIDE'; // 13,33 x 7,5 pol (16:9)
-    pptx.author = 'SSMA';
-    pptx.company = 'Usina Santa Adélia — SSMA';
-    pptx.title = `Índice de Prevenção - VIDAS — ${info.mesNome} — ${info.dirNome}`;
+    // Capa específica de uma gerência
+    const infoGerencia = g => ({
+      mesNome, safraNome, gerNome: g.gerNome, dirNome: g.dirNome, uniNome: g.uniNome, nGer: 1, media: g.ip
+    });
 
-    slideCapa(pptx, info);
-    dados.forEach(g => slidesGerencia(pptx, g, info));
+    if (modoArquivo() === 'separado' && dados.length > 1) {
+      // ── Um arquivo por gerência
+      const gerados = [];
+      for (let i = 0; i < dados.length; i++) {
+        const g = dados[i];
+        progresso(80 + (i / dados.length) * 20, `Gerando ${i + 1}/${dados.length}: ${g.gerNome}`);
+        const info = infoGerencia(g);
+        const pptx = novoPptx(`Índice de Prevenção - VIDAS — ${mesNome} — ${g.gerNome}`);
+        slideCapa(pptx, info);
+        slidesGerencia(pptx, g, info);
+        const nomeArq = `IP_VIDAS_${mes}_${slugArq(g.gerNome)}${g.uniNome ? '_' + slugArq(g.uniNome) : ''}.pptx`;
+        await pptx.writeFile({ fileName: nomeArq });
+        gerados.push(nomeArq);
+        await pausa(500); // intervalo entre downloads para o navegador não bloquear
+      }
+      progresso(100, `Pronto: ${gerados.length} arquivo(s) baixado(s). Se o navegador pedir, permita downloads múltiplos.`);
+      registrarLog('ok', 'Apresentação', gerados.length + ' arquivo(s) por gerência gerados');
+    } else {
+      // ── Um arquivo único (1 gerência marcada usa a capa da gerência)
+      const unica = dados.length === 1;
+      const info = unica ? infoGerencia(dados[0]) : {
+        mesNome, safraNome,
+        dirNome: dir ? dir.nome : 'Todas as Diretorias',
+        nGer: dados.length,
+        media: dados.reduce((s, g) => s + g.ip, 0) / dados.length
+      };
+      progresso(85, 'Montando os slides...');
+      const pptx = novoPptx(`Índice de Prevenção - VIDAS — ${mesNome} — ${info.gerNome || info.dirNome}`);
+      slideCapa(pptx, info);
+      dados.forEach(g => slidesGerencia(pptx, g, info));
 
-    progresso(92, 'Salvando o arquivo...');
-    const slug = t => normaliza(t).replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
-    const nomeArq = `IP_VIDAS_${mes}_${dir ? slug(dir.nome) : 'TODAS'}.pptx`;
-    await pptx.writeFile({ fileName: nomeArq });
-    progresso(100, `Pronto: ${nomeArq} (${dados.length} gerência(s)).`);
-    registrarLog('ok', 'Apresentação', nomeArq + ' gerada');
+      progresso(95, 'Salvando o arquivo...');
+      const sufixo = unica
+        ? slugArq(dados[0].gerNome) + (dados[0].uniNome ? '_' + slugArq(dados[0].uniNome) : '')
+        : (dir ? slugArq(dir.nome) : 'TODAS') + (gerIds.length < _gerDisponiveis.length ? '_' + dados.length + 'GER' : '');
+      const nomeArq = `IP_VIDAS_${mes}_${sufixo}.pptx`;
+      await pptx.writeFile({ fileName: nomeArq });
+      progresso(100, `Pronto: ${nomeArq} (${dados.length} gerência(s)).`);
+      registrarLog('ok', 'Apresentação', nomeArq + ' gerada');
+    }
   } catch (e) {
     console.error(e);
     progresso(100, 'Erro: ' + (e.message || e));
     registrarLog('erro', 'Apresentação', e.message || String(e));
   } finally {
-    btn.disabled = false; btn.textContent = 'Gerar PowerPoint (.pptx)';
+    btn.disabled = false; btn.textContent = textoBtn;
+    atualizarResumoSelecao();
   }
 }
 
@@ -1920,56 +2072,179 @@ async function importarPlanilhaWecheckPlanoAcao(evento) {
   }
 }
 
+// Prévia do Plano de Ação — versão do Hub:
+//  • permite escolher QUAIS gerências importar (caixas de seleção + busca);
+//  • aponta, em cada indicador, quais ações estão pendentes (tudo que não é "Concluída"),
+//    com número, ação, responsável e status — é o que explica o "previsto 2 / realizado 1".
 async function mostrarPreviaImportacaoPAV2(prontos, nomeArquivo) {
-  const linhasHtml = prontos.map(g => {
-    const pct = g.previsto > 0 ? Math.min((g.realizado / g.previsto) * 100, 100) : (g.realizado === 0 ? 100 : 0);
-    return `<tr>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee">${g.gerNome}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee">${g.mes}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee">${g.nomeIndicador}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center">${g.previsto}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center">${g.realizado}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;font-weight:600">${pct.toFixed(1)}%</td>
-    </tr>`;
-  }).join('');
+  const esc = s => (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const ehConcluida = st => /CONCLU/.test(normaliza(st));
+  const corStatus = st => {
+    const n = normaliza(st);
+    if (/ATRAS/.test(n)) return '#B42318';
+    if (/ANDAMENTO|PENDENTE|ABERT/.test(n)) return '#9A6B00';
+    return '#5D6F64';
+  };
+  const TD = 'padding:6px 10px;border-bottom:1px solid #eee';
+
+  // Agrupa por gerência (id) mantendo a ordem alfabética
+  const porGer = {};
+  prontos.forEach((g, idx) => {
+    const k = g.gerId;
+    if (!porGer[k]) porGer[k] = { gerId: k, gerNome: g.gerNome, unidadeNome: g.unidadeNome, itens: [], prev: 0, real: 0, pend: 0 };
+    const pendentes = (g.pessoas || []).filter(p => !ehConcluida(p.status));
+    porGer[k].itens.push({ g, idx, pendentes });
+    porGer[k].prev += g.previsto; porGer[k].real += g.realizado; porGer[k].pend += pendentes.length;
+  });
+  const gerencias = Object.values(porGer).sort((a, b) => a.gerNome.localeCompare(b.gerNome, 'pt-BR'));
+  const selecionadas = new Set(gerencias.map(x => String(x.gerId)));
+
+  const blocoGerencia = G => {
+    const linhas = G.itens.map(({ g, pendentes }) => {
+      const pct = g.previsto > 0 ? Math.min((g.realizado / g.previsto) * 100, 100) : (g.realizado === 0 ? 100 : 0);
+      const corPct = pct >= 100 ? '#07583C' : '#B42318';
+      const detalhe = pendentes.length ? `
+        <tr><td colspan="5" style="padding:0 10px 10px 24px;border-bottom:1px solid #eee">
+          <div style="background:#FFF6F5;border-left:3px solid #B42318;border-radius:4px;padding:8px 10px">
+            <div style="font-size:12px;font-weight:700;color:#B42318;margin-bottom:4px">
+              ${pendentes.length} ação(ões) pendente(s) — é o que falta para o realizado bater com o previsto
+            </div>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="color:#5D6F64;text-align:left">
+                <th style="padding:3px 6px;width:70px">Nº</th><th style="padding:3px 6px">Ação</th>
+                <th style="padding:3px 6px;width:170px">Responsável</th><th style="padding:3px 6px;width:110px">Status</th>
+              </tr></thead>
+              <tbody>${pendentes.map(p => `<tr>
+                <td style="padding:3px 6px;vertical-align:top">${esc(p.matricula) || '—'}</td>
+                <td style="padding:3px 6px;vertical-align:top">${esc(p.nome) || '<em style="color:#999">sem descrição</em>'}</td>
+                <td style="padding:3px 6px;vertical-align:top">${esc(p.cargo) || '—'}</td>
+                <td style="padding:3px 6px;vertical-align:top;font-weight:700;color:${corStatus(p.status)}">${esc(p.status) || 'sem status'}</td>
+              </tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </td></tr>` : '';
+      return `<tr>
+        <td style="${TD}">${esc(g.mes)}</td>
+        <td style="${TD}">${esc(g.nomeIndicador)}</td>
+        <td style="${TD};text-align:center">${g.previsto}</td>
+        <td style="${TD};text-align:center">${g.realizado}</td>
+        <td style="${TD};text-align:center;font-weight:700;color:${corPct}">${pct.toFixed(1)}%</td>
+      </tr>${detalhe}`;
+    }).join('');
+
+    const resumoPend = G.pend
+      ? `<span style="color:#B42318;font-weight:700">${G.pend} pendente(s)</span>`
+      : `<span style="color:#07583C;font-weight:700">tudo concluído</span>`;
+
+    return `<div class="pa-ger" data-ger="${G.gerId}" data-nome="${esc(normaliza(G.gerNome + ' ' + G.unidadeNome))}" data-pend="${G.pend}"
+                 style="border:1px solid #D5E3CC;border-radius:8px;margin-bottom:10px;overflow:hidden">
+      <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#F3F8EF;cursor:pointer">
+        <input type="checkbox" class="pa-chk" value="${G.gerId}" checked style="width:18px;height:18px;accent-color:#07583C">
+        <span style="flex:1;font-weight:700">${esc(G.gerNome)} <span style="font-weight:500;color:#5D6F64">(${esc(G.unidadeNome)})</span></span>
+        <span style="font-size:12.5px;color:#5D6F64">Previsto ${G.prev} · Realizado ${G.real} · ${resumoPend}</span>
+      </label>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#fafafa;color:#5D6F64">
+          <th style="padding:5px 10px;text-align:left;width:80px">Mês</th>
+          <th style="padding:5px 10px;text-align:left">Indicador</th>
+          <th style="padding:5px 10px;width:80px">Previsto</th>
+          <th style="padding:5px 10px;width:80px">Realizado</th>
+          <th style="padding:5px 10px;width:80px">%</th>
+        </tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+    </div>`;
+  };
+
+  const totalPend = gerencias.reduce((s, G) => s + G.pend, 0);
+  const BTN = 'padding:6px 12px;border-radius:6px;border:1px solid #D5E3CC;background:#fff;cursor:pointer;font-size:13px';
 
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
   overlay.innerHTML = `
-    <div style="background:#fff;border-radius:10px;max-width:800px;width:90%;max-height:80vh;overflow:auto;padding:24px;">
-      <h3 style="margin:0 0 4px">Prévia da importação (Plano de Ação) — ${nomeArquivo}</h3>
-      <p style="color:#666;font-size:13px;margin:0 0 16px">${prontos.length} lançamento(s) de indicador serão gravados/atualizados. Previsto = total de planos; Realizado = não Atrasados. Nada foi salvo ainda.</p>
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="background:#f5f5f5">
-          <th style="padding:6px 10px;text-align:left">Gerência</th>
-          <th style="padding:6px 10px;text-align:left">Mês</th>
-          <th style="padding:6px 10px;text-align:left">Indicador</th>
-          <th style="padding:6px 10px">Previsto</th>
-          <th style="padding:6px 10px">Realizado</th>
-          <th style="padding:6px 10px">%</th>
-        </tr></thead>
-        <tbody>${linhasHtml}</tbody>
-      </table>
-      <div style="text-align:right;margin-top:16px">
-        <button id="btn-cancelar-previa-pa" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;margin-right:8px">Cancelar</button>
-        <button id="btn-confirmar-previa-pa" style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer">Confirmar e Gravar</button>
+    <div style="background:#fff;border-radius:10px;max-width:960px;width:94%;max-height:88vh;display:flex;flex-direction:column;">
+      <div style="padding:20px 24px 12px;border-bottom:1px solid #eee">
+        <h3 style="margin:0 0 4px">Prévia da importação (Plano de Ação) — ${esc(nomeArquivo)}</h3>
+        <p style="color:#666;font-size:13px;margin:0 0 12px">
+          ${gerencias.length} gerência(s) na planilha, ${totalPend} ação(ões) pendente(s) no total.
+          Previsto = total de planos; Realizado = só os Concluídos. Marque as gerências que quer gravar — nada foi salvo ainda.
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="pa-busca" type="search" placeholder="Buscar gerência..." style="flex:1;min-width:180px;padding:7px 10px;border:1px solid #D5E3CC;border-radius:6px;font-size:13px">
+          <button id="pa-marcar" style="${BTN}">Marcar visíveis</button>
+          <button id="pa-desmarcar" style="${BTN}">Desmarcar visíveis</button>
+          <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="pa-so-pend" style="accent-color:#07583C"> Só com pendência
+          </label>
+        </div>
+      </div>
+      <div id="pa-lista" style="overflow:auto;padding:14px 24px;flex:1">
+        ${gerencias.map(blocoGerencia).join('')}
+      </div>
+      <div style="padding:12px 24px;border-top:1px solid #eee;display:flex;align-items:center;gap:8px">
+        <span id="pa-contador" style="flex:1;font-size:13px;color:#5D6F64"></span>
+        <button id="btn-cancelar-previa-pa" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer">Cancelar</button>
+        <button id="btn-confirmar-previa-pa" style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer">Gravar selecionadas</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+
+  const $ = sel => overlay.querySelector(sel);
+  const blocos = () => Array.from(overlay.querySelectorAll('.pa-ger'));
+  const visiveis = () => blocos().filter(b => b.style.display !== 'none');
+
+  const atualizarContador = () => {
+    const n = selecionadas.size;
+    const nLanc = prontos.filter(g => selecionadas.has(String(g.gerId))).length;
+    $('#pa-contador').textContent = `${n} de ${gerencias.length} gerência(s) selecionada(s) — ${nLanc} lançamento(s) de indicador`;
+    const btn = $('#btn-confirmar-previa-pa');
+    btn.disabled = n === 0;
+    btn.style.opacity = n === 0 ? '.5' : '1';
+    btn.textContent = n === 0 ? 'Selecione ao menos uma' : `Gravar ${n} gerência(s)`;
+  };
+  const filtrar = () => {
+    const termo = normaliza($('#pa-busca').value);
+    const soPend = $('#pa-so-pend').checked;
+    blocos().forEach(b => {
+      const ok = (!termo || b.dataset.nome.includes(termo)) && (!soPend || parseInt(b.dataset.pend) > 0);
+      b.style.display = ok ? '' : 'none';
+    });
+  };
+  const marcarVisiveis = valor => {
+    visiveis().forEach(b => {
+      const chk = b.querySelector('.pa-chk');
+      chk.checked = valor;
+      valor ? selecionadas.add(chk.value) : selecionadas.delete(chk.value);
+    });
+    atualizarContador();
+  };
+
+  overlay.querySelectorAll('.pa-chk').forEach(chk => {
+    chk.onchange = () => { chk.checked ? selecionadas.add(chk.value) : selecionadas.delete(chk.value); atualizarContador(); };
+  });
+  $('#pa-busca').oninput = filtrar;
+  $('#pa-so-pend').onchange = filtrar;
+  $('#pa-marcar').onclick = () => marcarVisiveis(true);
+  $('#pa-desmarcar').onclick = () => marcarVisiveis(false);
+  atualizarContador();
+
   document.getElementById('btn-cancelar-previa-pa').onclick = () => overlay.remove();
   document.getElementById('btn-confirmar-previa-pa').onclick = async () => {
+    const escolhidos = prontos.filter(g => selecionadas.has(String(g.gerId)));
+    if (!escolhidos.length) return;
     const btn = document.getElementById('btn-confirmar-previa-pa');
     btn.disabled = true; btn.textContent = 'Gravando...';
     try {
-      const resumo = await gravarImportacaoWecheckPA(prontos);
+      const resumo = await gravarImportacaoWecheckPA(escolhidos);
       overlay.remove();
-      alert('Importação concluída.\n' + resumo.ok + ' lançamento(s) atualizado(s) com sucesso.' +
+      alert('Importação concluída.\n' + resumo.ok + ' lançamento(s) atualizado(s) com sucesso' +
+        ' (' + selecionadas.size + ' gerência(s) selecionada(s)).' +
         (resumo.erros.length ? '\n' + resumo.erros.length + ' com erro (veja o console).' : ''));
       if (resumo.erros.length) console.error('Erros na importação:', resumo.erros);
       if (typeof onPeriodoLancarChange === 'function') onPeriodoLancarChange();
     } catch (err) {
       alert('Erro ao gravar: ' + err.message);
-      btn.disabled = false; btn.textContent = 'Confirmar e Gravar';
+      btn.disabled = false; atualizarContador();
     }
   };
 }
