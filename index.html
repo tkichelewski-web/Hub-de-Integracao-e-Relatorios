@@ -553,7 +553,9 @@ const IMPORTACOES = {
             dica: 'GERENCIA, UNIDADE2/UNIDADE, MES, ANO/SAFRA, Tipo de Plano de Ação' },
   sim:    { grupo: 'wecheck', titulo: 'Simulados',           input: 'input-importar-planilha-sim',   fn: 'importarPlanilhaWecheckSimulados',
             dica: 'Unidade, Diretoria, MÊS, ANO/SAFRA, PLANEJADO, REALIZADO' },
-  coach:  { grupo: 'outras',  titulo: 'Coaching Liderança',  input: 'input-importar-planilha-coach', fn: 'importarPlanilhaCoachingLideranca',
+  crono:  { grupo: 'outras',  titulo: 'Coaching Liderança — Cronograma', acao: 'abrirApuracaoCronograma',
+            dica: 'Lê o Cronograma de Coaching (sem planilha). Fechamento do semestre (set/mar) = realizado × previsto; demais meses = 0 de 0' },
+  coach:  { grupo: 'outras',  titulo: 'Coaching Liderança (planilha antiga)',  input: 'input-importar-planilha-coach', fn: 'importarPlanilhaCoachingLideranca',
             dica: 'Matricula, Colaborador, Gerência, Observação Realizada, Inspeção Realizada (o mês é escolhido na prévia)' },
   exames: { grupo: 'outras',  titulo: 'Exames Periódicos',   input: 'input-importar-periodico',      fn: 'importarPlanilhaExamesPeriodicos',
             dica: 'GERENCIA, Mes Nome, Safra, Total Previsto Inicial, Total Realizado' },
@@ -573,8 +575,8 @@ function renderListaImportacoes() {
         <div class="imp-dica">${cfg.dica}</div>
       </div>
       <span class="imp-status" id="st-${chave}"></span>
-      <button class="btn btn-sec" id="btn-${chave}" onclick="document.getElementById('${cfg.input}').click()">
-        ${cfg.grupo === 'fechamento' ? 'Importar fechamento' : 'Selecionar arquivo'}
+      <button class="btn btn-sec" id="btn-${chave}" onclick="${cfg.acao ? cfg.acao + '()' : `document.getElementById('${cfg.input}').click()`}">
+        ${cfg.acao ? 'Apurar do cronograma' : (cfg.grupo === 'fechamento' ? 'Importar fechamento' : 'Selecionar arquivo')}
       </button>
     </div>`;
   const por = g => Object.entries(IMPORTACOES).filter(([, c]) => c.grupo === g).map(([k, c]) => linha(k, c)).join('');
@@ -3060,6 +3062,306 @@ async function gravarImportacaoCoaching(prontos, escolha, indInspId, indObsId) {
     }
   }
   return { ok, erros };
+}
+
+// ===== Coaching Liderança — apuração a partir do CRONOGRAMA DE COACHING =====
+// Regras (definidas pela usuária):
+//  • O coaching é SEMESTRAL: S1 = abril a setembro, S2 = outubro a março.
+//  • Mês de FECHAMENTO do semestre (setembro / março): previsto = coachings dos líderes
+//    ativos da gerência no semestre; realizado = coachings "Realizado" concluídos até o
+//    último dia do semestre (feitos com atraso não contam).
+//  • Demais meses do semestre: 0 de 0 (= 100 pontos, mesma regra do sistema).
+//  • Meses que não são o fechamento só são atualizados se o lançamento da gerência já
+//    existir (não cria lançamento vazio). O mês de fechamento cria o lançamento se faltar.
+//  • Substituição: apaga e regrava só os 2 itens de coaching; recalcula PG, média da
+//    diretoria e IP igual às outras importações.
+
+function mesesDoSemestreHub(safra, sem) {
+  const a = Number(safra.ano_ini), b = Number(safra.ano_fim) || a + 1;
+  const lista = [];
+  if (sem === 'S1') for (let m = 4; m <= 9; m++) lista.push(`${a}-${String(m).padStart(2, '0')}`);
+  else { for (let m = 10; m <= 12; m++) lista.push(`${a}-${m}`); for (let m = 1; m <= 3; m++) lista.push(`${b}-0${m}`); }
+  return lista;
+}
+
+function prazoDoSemestreHub(safra, sem) {
+  const a = Number(safra.ano_ini), b = Number(safra.ano_fim) || a + 1;
+  return sem === 'S1' ? `${a}-09-30` : `${b}-03-31`;
+}
+
+function abrirApuracaoCronograma() {
+  _importAtual = 'crono';
+  const hoje = new Date();
+  const mAtual = hoje.getMonth() + 1;
+  const semDefault = (mAtual >= 4 && mAtual <= 9) ? 'S1' : 'S2';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'overlay-crono';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:10px;max-width:960px;width:94%;max-height:86vh;overflow:auto;padding:24px;">
+      <h3 style="margin:0 0 4px;color:#07583C">Coaching Liderança — apurar do Cronograma</h3>
+      <p style="color:#666;font-size:13px;margin:0 0 14px;line-height:1.5">
+        Lê os coachings do Cronograma e grava os indicadores <b>${NOME_IND_COACHING_INSPECAO}</b> e
+        <b>${NOME_IND_COACHING_OBSERVACAO}</b>. No mês de fechamento do semestre entra o realizado × previsto;
+        nos demais meses marcados entra <b>0 de 0</b> (100 pontos). Nada é salvo antes de você confirmar.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+        <div>
+          <label style="display:block;font-size:12px;color:#666;margin-bottom:4px">Safra</label>
+          <select id="crono-safra" style="padding:8px;border-radius:6px;border:1px solid #ccc;min-width:160px">
+            ${safrasData.map(s => `<option value="${s.id}">${s.nome}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;color:#666;margin-bottom:4px">Semestre</label>
+          <select id="crono-sem" style="padding:8px;border-radius:6px;border:1px solid #ccc;min-width:170px">
+            <option value="S1" ${semDefault === 'S1' ? 'selected' : ''}>1º semestre (abr–set)</option>
+            <option value="S2" ${semDefault === 'S2' ? 'selected' : ''}>2º semestre (out–mar)</option>
+          </select>
+        </div>
+        <button id="crono-btn-carregar" class="btn btn-sec" onclick="carregarPreviaCronograma()">Carregar prévia</button>
+      </div>
+      <div id="crono-previa" style="font-size:13px;color:#666">Escolha a safra e o semestre e clique em "Carregar prévia".</div>
+      <div style="text-align:right;margin-top:16px">
+        <button onclick="document.getElementById('overlay-crono').remove()" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;margin-right:8px">Cancelar</button>
+        <button id="crono-btn-gravar" disabled style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer;opacity:.5">Confirmar e Gravar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+let _planoCrono = null;
+
+async function carregarPreviaCronograma() {
+  const safraId = parseInt(document.getElementById('crono-safra').value, 10);
+  const sem = document.getElementById('crono-sem').value;
+  const safra = safrasData.find(s => s.id === safraId);
+  const box = document.getElementById('crono-previa');
+  const btnG = document.getElementById('crono-btn-gravar');
+  btnG.disabled = true; btnG.style.opacity = .5;
+  if (!safra) { box.innerHTML = 'Safra não encontrada.'; return; }
+  box.innerHTML = '<span class="spinner"></span> Lendo o cronograma...';
+
+  try {
+    // Indicadores de coaching
+    const indInsp = indicadores.find(i => normaliza(i.nome) === normaliza(NOME_IND_COACHING_INSPECAO));
+    const indObs  = indicadores.find(i => normaliza(i.nome) === normaliza(NOME_IND_COACHING_OBSERVACAO));
+    if (!indInsp || !indObs) {
+      box.innerHTML = '<span style="color:#d93025">Não encontrei os indicadores de coaching cadastrados (ativos) no sistema.</span>';
+      return;
+    }
+
+    // Coachings do semestre
+    const { data: crono, error: eC } = await sbSafe(() => sb.from('cronograma_coaching')
+      .select('gerencia_id, matricula, tipo, status, mes, data_coaching, data_agendada')
+      .eq('safra_id', safraId).eq('semestre', sem));
+    if (eC) throw new Error('cronograma_coaching: ' + eC.message);
+
+    // Gerências que têm os indicadores de coaching configurados na safra
+    let { data: cfg, error: eCfg } = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id, indicador_id')
+      .eq('safra_id', safraId).eq('ativo', true).in('indicador_id', [indInsp.id, indObs.id]));
+    if (eCfg) throw new Error('ind_gerencia_safra: ' + eCfg.message);
+    if (!cfg || !cfg.length) {
+      const r2 = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id, indicador_id')
+        .eq('ativo', true).in('indicador_id', [indInsp.id, indObs.id]));
+      cfg = r2.data || [];
+    }
+    const gersComInd = new Set((cfg || []).map(c => c.gerencia_id));
+
+    const meses = mesesDoSemestreHub(safra, sem);
+    const mesFech = meses[meses.length - 1];
+    const prazo = prazoDoSemestreHub(safra, sem);
+    const hojeMes = new Date().toISOString().substring(0, 7);
+
+    // Contagem por gerência
+    const cont = {};
+    const semConfig = new Set();
+    (crono || []).forEach(c => {
+      if (c.status === 'Inativo') return;
+      if (!gersComInd.has(c.gerencia_id)) { semConfig.add(c.gerencia_id); return; }
+      const g = cont[c.gerencia_id] = cont[c.gerencia_id] || { insp: [0, 0], obs: [0, 0], lideres: new Set() };
+      const k = c.tipo === 'Inspeção' ? 'insp' : 'obs';
+      g[k][0]++;
+      g.lideres.add(c.matricula);
+      const dataReal = c.data_coaching || c.data_agendada || (c.mes ? c.mes + '-01' : null);
+      if (c.status === 'Realizado' && (!dataReal || dataReal <= prazo)) g[k][1]++;
+    });
+    // Gerências configuradas sem líderes no cronograma → 0 de 0 também no fechamento
+    gersComInd.forEach(id => { if (!cont[id]) cont[id] = { insp: [0, 0], obs: [0, 0], lideres: new Set() }; });
+
+    const gerIds = Object.keys(cont).map(Number).filter(id => estrutura.gerencias.some(g => g.id === id));
+
+    // Lançamentos existentes nos meses do semestre + valores atuais dos itens de coaching
+    const { data: lancs, error: eL } = await sbSafe(() => sb.from('lancamentos').select('id, gerencia_id, mes')
+      .eq('safra_id', safraId).in('mes', meses).in('gerencia_id', gerIds.length ? gerIds : [-1]));
+    if (eL) throw new Error('lancamentos: ' + eL.message);
+    const lancPor = {};
+    (lancs || []).forEach(l => { lancPor[l.gerencia_id + '|' + l.mes] = l.id; });
+
+    const idsL = (lancs || []).map(l => l.id);
+    const itensAtuais = {};
+    for (let i = 0; i < idsL.length; i += 200) {
+      const lote = idsL.slice(i, i + 200);
+      const { data: its } = await sbSafe(() => sb.from('lancamento_itens').select('lancamento_id, indicador_id, previsto, realizado')
+        .in('lancamento_id', lote).in('indicador_id', [indInsp.id, indObs.id]));
+      (its || []).forEach(it => { itensAtuais[it.lancamento_id + '|' + it.indicador_id] = it; });
+    }
+
+    _planoCrono = { safraId, sem, safra, meses, mesFech, prazo, hojeMes, cont, gerIds, lancPor, itensAtuais, indInspId: indInsp.id, indObsId: indObs.id };
+
+    // Seleção de meses (futuros bloqueados; fechamento sempre marcado se já chegou)
+    const nomeMes = m => { const n = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.substring(5, 7)) - 1]; return n + '/' + m.substring(2, 4); };
+    const chk = meses.map(m => {
+      const futuro = m > hojeMes;
+      const fech = m === mesFech;
+      return `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 12px 6px 0;font-size:12px;${futuro ? 'color:#aaa' : ''}">
+        <input type="checkbox" class="crono-mes" value="${m}" ${futuro ? 'disabled' : 'checked'} onchange="atualizarResumoCrono()">
+        ${nomeMes(m)} ${fech ? '<b style="color:#07583C">(fechamento)</b>' : '<span style="color:#888">(0 de 0)</span>'}${futuro ? ' — futuro' : ''}
+      </label>`;
+    }).join('');
+
+    const fmtPar = (par) => { const pct = par[0] ? Math.round(par[1] / par[0] * 100) : 100; return `${par[1]} de ${par[0]} <span style="color:#888">(${pct}%)</span>`; };
+    const nomeGer = id => { const g = estrutura.gerencias.find(x => x.id === id); return g ? `${g.nome} (${g.unidades?.nome || ''})` : 'Gerência ' + id; };
+    const atualFech = (gid, indId) => { const lid = lancPor[gid + '|' + mesFech]; const it = lid && itensAtuais[lid + '|' + indId]; return it ? `${it.realizado ?? 0} de ${it.previsto ?? 0}` : '—'; };
+
+    const linhas = gerIds.sort((a, b) => nomeGer(a).localeCompare(nomeGer(b))).map(id => {
+      const g = cont[id];
+      const temFech = !!lancPor[id + '|' + mesFech];
+      const outros = meses.filter(m => m !== mesFech && lancPor[id + '|' + m]).length;
+      return `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${nomeGer(id)}</b></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${g.lideres.size}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${fmtPar(g.insp)}<br><span style="font-size:11px;color:#999">atual: ${atualFech(id, indInsp.id)}</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${fmtPar(g.obs)}<br><span style="font-size:11px;color:#999">atual: ${atualFech(id, indObs.id)}</span></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:11px;color:#666">${temFech ? 'atualiza' : 'cria'} o fechamento · ${outros} outro(s) mês(es) com lançamento</td>
+      </tr>`;
+    }).join('');
+
+    const avisoSemCfg = semConfig.size
+      ? `<div style="background:#fff4e5;border:1px solid #ffd59e;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#8a5a00">
+           ⚠️ ${semConfig.size} gerência(s) têm líderes no cronograma mas não têm os indicadores de coaching configurados na safra (ind_gerencia_safra): 
+           ${[...semConfig].map(nomeGer).join(', ')}. Elas não serão gravadas.</div>` : '';
+
+    box.innerHTML = `
+      <div style="margin-bottom:10px;color:#333"><b>Meses que serão gravados:</b><br>${chk}</div>
+      <div id="crono-resumo" style="margin-bottom:10px;color:#07583C;font-weight:600"></div>
+      ${avisoSemCfg}
+      <div style="font-size:12px;color:#666;margin-bottom:6px">Valores do <b>fechamento (${nomeMes(mesFech)})</b> — prazo ${prazo.split('-').reverse().join('/')}. "atual" = o que está gravado hoje no IP.</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#f5f5f5">
+          <th style="padding:6px 8px;text-align:left">Gerência</th><th style="padding:6px 8px">Líderes</th>
+          <th style="padding:6px 8px">Inspeção (fechamento)</th><th style="padding:6px 8px">Observação (fechamento)</th>
+          <th style="padding:6px 8px;text-align:left">Lançamentos</th>
+        </tr></thead>
+        <tbody>${linhas || '<tr><td colspan="5" style="padding:10px;color:#999">Nenhuma gerência com os indicadores de coaching configurados.</td></tr>'}</tbody>
+      </table>`;
+
+    atualizarResumoCrono();
+    btnG.onclick = gravarApuracaoCronograma;
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<span style="color:#d93025">Erro: ${err.message}</span><br><span style="font-size:12px">Se o erro citar a coluna "semestre", rode antes o SQL de migração do cronograma.</span>`;
+  }
+}
+
+// Monta a lista de operações (gerência × mês) conforme os meses marcados
+function operacoesCrono() {
+  const p = _planoCrono;
+  if (!p) return [];
+  const mesesSel = [...document.querySelectorAll('.crono-mes:checked')].map(c => c.value);
+  const ops = [];
+  p.gerIds.forEach(gid => {
+    mesesSel.forEach(m => {
+      const fech = m === p.mesFech;
+      const lancId = p.lancPor[gid + '|' + m] || null;
+      if (!fech && !lancId) return; // não cria lançamento vazio fora do fechamento
+      const g = p.cont[gid];
+      ops.push({ gerId: gid, mes: m, lancId, fech,
+        insp: fech ? g.insp : [0, 0],
+        obs:  fech ? g.obs  : [0, 0] });
+    });
+  });
+  return ops;
+}
+
+function atualizarResumoCrono() {
+  const ops = operacoesCrono();
+  const el = document.getElementById('crono-resumo');
+  const btnG = document.getElementById('crono-btn-gravar');
+  const nFech = ops.filter(o => o.fech).length;
+  const nZero = ops.length - nFech;
+  if (el) el.textContent = ops.length
+    ? `${ops.length} lançamento(s) serão atualizados: ${nFech} de fechamento (realizado × previsto) e ${nZero} com 0 de 0.`
+    : 'Nenhum lançamento a gravar com os meses marcados.';
+  if (btnG) { btnG.disabled = !ops.length; btnG.style.opacity = ops.length ? 1 : .5; }
+}
+
+async function gravarApuracaoCronograma() {
+  const p = _planoCrono;
+  const ops = operacoesCrono();
+  if (!p || !ops.length) return;
+  if (!confirm(`Gravar ${ops.length} lançamento(s) de coaching no IP?\n\nOs itens de coaching desses meses serão substituídos e o IP das gerências recalculado.`)) return;
+
+  const btn = document.getElementById('crono-btn-gravar');
+  btn.disabled = true;
+  let ok = 0; const erros = [];
+  const hoje = new Date().toLocaleDateString('pt-BR');
+
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    btn.textContent = `Gravando ${i + 1}/${ops.length}...`;
+    try {
+      let lancId = o.lancId;
+      if (!lancId) {
+        const { data: ex } = await sb.from('lancamentos').select('id')
+          .eq('gerencia_id', o.gerId).eq('safra_id', p.safraId).eq('mes', o.mes).limit(1);
+        lancId = ex?.[0]?.id || null;
+        if (!lancId) {
+          const { data: ins, error: eIns } = await sb.from('lancamentos').insert({
+            gerencia_id: o.gerId, safra_id: p.safraId, mes: o.mes, periodo: o.mes,
+            atualizado_em: new Date().toISOString()
+          }).select('id');
+          if (eIns) throw eIns;
+          lancId = ins?.[0]?.id;
+        }
+      }
+
+      const comentario = o.fech
+        ? `Apurado do Cronograma de Coaching (${p.sem}) em ${hoje}`
+        : `Coaching semestral (${p.sem}) — apurado só no fechamento; mês sem cobrança (0 de 0)`;
+
+      await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).in('indicador_id', [p.indInspId, p.indObsId]);
+      const { error: eItens } = await sb.from('lancamento_itens').insert([
+        { lancamento_id: lancId, indicador_id: p.indInspId, previsto: o.insp[0], realizado: o.insp[1], comentario },
+        { lancamento_id: lancId, indicador_id: p.indObsId,  previsto: o.obs[0],  realizado: o.obs[1],  comentario }
+      ]);
+      if (eItens) throw eItens;
+
+      const { data: todosItens } = await sb.from('lancamento_itens').select('*').eq('lancamento_id', lancId);
+      const indsGer = await getIndsGerencia(o.gerId, p.safraId);
+      const pg = calcPontGer(todosItens || [], indsGer || []);
+      const { aud, mediaDir } = await recalcularAuditoriaEMediaDiretoria(o.gerId, o.mes, p.safraId, pg);
+      const { data: lancAtual } = await sb.from('lancamentos').select('ajuste_pontos').eq('id', lancId).limit(1);
+      const aj = lancAtual?.[0]?.ajuste_pontos || 0;
+
+      await sb.from('lancamentos').update({
+        pontuacao_gerencia: pg, media_diretoria: mediaDir, nota_auditoria: aud,
+        indice_base: calcIndice(pg, mediaDir, aud, 0), indice_prevencao: calcIndice(pg, mediaDir, aud, aj),
+        atualizado_em: new Date().toISOString()
+      }).eq('id', lancId);
+      ok++;
+    } catch (err) {
+      const g = estrutura.gerencias.find(x => x.id === o.gerId);
+      erros.push({ gerencia: g?.nome || o.gerId, mes: o.mes, erro: err.message });
+    }
+  }
+
+  document.getElementById('overlay-crono')?.remove();
+  if (erros.length) console.error('Erros na apuração do cronograma:', erros);
+  alert(`Apuração concluída.\n${ok} lançamento(s) gravado(s).` + (erros.length ? `\n${erros.length} com erro (veja o console).` : ''));
+  if (ok) onPeriodoLancarChange();
+  else registrarLog('erro', 'Coaching — Cronograma', 'nenhum lançamento gravado');
 }
 
 // ===== Importação de Fechamento Mensal Completo (pacote com todos os indicadores) =====
