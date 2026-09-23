@@ -840,6 +840,34 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
     }
   }
 
+  // Coaching do semestre (Cronograma de Coaching) — slide informativo "a vencer"
+  progresso(19, 'Buscando cronograma de coaching...');
+  const coachPorGer = {};
+  const semInfo = semestreDoMesHub(safraId, mes);
+  if (semInfo) {
+    const gerIdsLista = lista.map(l => l.gerencia_id);
+    const { data: crono, error: eCr } = await sbSafe(() => sb.from('cronograma_coaching')
+      .select('gerencia_id, matricula, lider_nome, tipo, status, data_agendada, data_coaching, tecnico_nome')
+      .eq('safra_id', safraId).eq('semestre', semInfo.sem).neq('status', 'Inativo')
+      .in('gerencia_id', gerIdsLista.length ? gerIdsLista : [-1]));
+    if (eCr) console.warn('Cronograma de coaching não carregado:', eCr.message);
+    (crono || []).forEach(c => {
+      const g = coachPorGer[c.gerencia_id] = coachPorGer[c.gerencia_id] || { ...semInfo, total: 0, feitos: 0, lideres: {} };
+      g.total++;
+      const dt = c.data_coaching || c.data_agendada;
+      if (c.status === 'Realizado' && (!dt || dt <= semInfo.prazo)) { g.feitos++; return; }
+      const L = g.lideres[c.matricula] = g.lideres[c.matricula] || { nome: c.lider_nome || '', matricula: String(c.matricula || ''), tipos: [], status: [], tecnico: '' };
+      L.tipos.push(c.tipo);
+      let st;
+      if (c.status === 'Realizado') st = 'Feito após o prazo';
+      else if (semInfo.hoje > semInfo.prazo) st = 'Atrasado';
+      else if (c.status === 'Agendado') st = 'Agendado' + (c.data_agendada ? ' ' + c.data_agendada.split('-').reverse().slice(0, 2).join('/') : '');
+      else st = 'Pendente';
+      L.status.push(st);
+      if (c.tecnico_nome && !L.tecnico) L.tecnico = c.tecnico_nome;
+    });
+  }
+
   // Pesos por gerência/safra (ind_gerencia_safra) — mesma função do sistema principal
   const indsPorGer = {};
   for (let i = 0; i < lista.length; i++) {
@@ -864,7 +892,9 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
     const linhas = validos.map(it => {
       const ind = indsGer.find(i => i.id === it.indicador_id);
       // Só aponta pendência em indicador que não bateu 100% (igual ao sistema principal)
-      const pendItem = (it.pontuacao || 0) < 100 ? (pendPorItem[l.id + '|' + it.indicador_id] || []) : [];
+      // Coaching tem slide próprio ("Coaching do semestre"), então não repete aqui
+      const ehCoaching = /COACHING/.test(normaliza(ind.nome || ''));
+      const pendItem = (!ehCoaching && (it.pontuacao || 0) < 100) ? (pendPorItem[l.id + '|' + it.indicador_id] || []) : [];
       pendItem.forEach(p => pendencias.push({
         indicador: ind.nome || ('Indicador ' + it.indicador_id),
         nome: p.nome || '', cargo: p.cargo || '', matricula: p.matricula || '', status: p.status || ''
@@ -914,7 +944,8 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
       pendencias: pendencias.sort((a, b) =>
         (/ATRAS/.test(normaliza(b.status)) - /ATRAS/.test(normaliza(a.status))) ||
         a.indicador.localeCompare(b.indicador, 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR')),
-      pgTabela: linhas.reduce((s, r) => s + r.contrib, 0)
+      pgTabela: linhas.reduce((s, r) => s + r.contrib, 0),
+      coaching: coachPorGer[l.gerencia_id] || null
     };
   });
 }
@@ -1074,6 +1105,72 @@ function slidesPendencias(pptx, g, info) {
   }
 }
 
+// Semestre do coaching a partir do mês da apresentação (S1 = abr–set, S2 = out–mar)
+function semestreDoMesHub(safraId, mes) {
+  const safra = safrasData.find(x => x.id === safraId);
+  if (!safra || !mes) return null;
+  const m = Number(mes.substring(5, 7));
+  const a = Number(safra.ano_ini), b = Number(safra.ano_fim) || a + 1;
+  const d = new Date();
+  const hoje = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (m >= 4 && m <= 9) return { sem: 'S1', prazo: `${a}-09-30`, mesFech: `${a}-09`, rotulo: `1º semestre (abr a set/${a})`, hoje, mes };
+  return { sem: 'S2', prazo: `${b}-03-31`, mesFech: `${b}-03`, rotulo: `2º semestre (out/${a} a mar/${b})`, hoje, mes };
+}
+
+const COACH_POR_SLIDE = 13;
+
+// Slide "Coaching do semestre — a vencer" (informativo nos meses sem cobrança;
+// no mês de fechamento, mostra quem ficou pendente e pesa no IP)
+function slidesCoachingSemestre(pptx, g, info) {
+  const c = g.coaching;
+  if (!c || !c.total) return;
+  const lideres = Object.values(c.lideres).sort((a, b) =>
+    (/Atras|após/.test(b.status.join()) - /Atras|após/.test(a.status.join())) || a.nome.localeCompare(b.nome, 'pt-BR'));
+  if (!lideres.length) return; // todos concluídos: não gera slide
+
+  const fechamento = c.mes >= c.mesFech;
+  const titulo = fechamento ? 'coaching do semestre (pendentes)' : 'coaching do semestre (a vencer)';
+  const pct = Math.round(c.feitos / c.total * 100);
+  const prazoTxt = c.prazo.split('-').reverse().join('/');
+  const nota = fechamento
+    ? 'Mês de fechamento do semestre: os coachings não realizados até o prazo reduzem a pontuação do indicador.'
+    : 'Informativo: o coaching é apurado no fechamento do semestre. Neste mês o indicador não é cobrado (0 de 0).';
+
+  for (let i = 0; i < lideres.length; i += COACH_POR_SLIDE) {
+    const pag = lideres.slice(i, i + COACH_POR_SLIDE);
+    const s = pptx.addSlide();
+    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — ' + titulo }, info, i > 0);
+    s.addText([
+      { text: `${c.feitos} de ${c.total} coachings concluídos (${pct}%)`, options: { bold: true, color: COR.verde } },
+      { text: `   |   ${lideres.length} líder(es) com coaching em aberto   |   ${c.rotulo} — prazo ${prazoTxt}`, options: { color: COR.muted } }
+    ], { x: 0.5, y: 1.22, w: 12.33, h: 0.35, fontFace: FONTE, fontSize: 12, margin: 0, valign: 'middle' });
+
+    const hdr = t => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde } } });
+    const rows = [[hdr('Líder'), hdr('Matrícula'), hdr('Coaching em aberto'), hdr('Técnico SSMA'),
+                   { text: 'Situação', options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'center' } }]];
+    pag.forEach((L, k) => {
+      const fill = { color: k % 2 ? COR.zebra : 'FFFFFF' };
+      const unicos = [...new Set(L.status)];
+      const st = unicos.length === 1 ? unicos[0] : L.tipos.map((t, j) => `${t === 'Inspeção' ? 'Insp.' : 'Obs.'}: ${L.status[j]}`).join('  |  ');
+      const atras = /Atras|após/.test(st);
+      rows.push([
+        { text: L.nome || '—', options: { fill } },
+        { text: L.matricula || '—', options: { fill } },
+        { text: L.tipos.join(' + '), options: { fill } },
+        { text: L.tecnico || '—', options: { fill, color: COR.muted } },
+        { text: st, options: { fill, align: 'center', bold: true, color: atras ? COR.atencao : (/Agendado/.test(st) ? COR.verde : COR.minimo) } }
+      ]);
+    });
+    s.addTable(rows, {
+      x: 0.5, y: 1.65, w: 12.33,
+      colW: [3.4, 1.3, 2.2, 2.2, 3.23],
+      rowH: 0.3, fontFace: FONTE, fontSize: 9.5, color: COR.tinta, valign: 'middle',
+      border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6]
+    });
+    s.addText(nota, { x: 0.5, y: 6.55, w: 12.33, h: 0.3, fontFace: FONTE, fontSize: 9, italic: true, color: COR.muted, margin: 0 });
+  }
+}
+
 function slidesGerencia(pptx, g, info) {
   const paginas = [];
   for (let i = 0; i < g.linhas.length; i += LINHAS_POR_SLIDE) paginas.push(g.linhas.slice(i, i + LINHAS_POR_SLIDE));
@@ -1103,6 +1200,7 @@ function slidesGerencia(pptx, g, info) {
   });
 
   slidesPendencias(pptx, g, info);
+  slidesCoachingSemestre(pptx, g, info);
 }
 
 function novoPptx(titulo) {
@@ -3084,6 +3182,11 @@ function mesesDoSemestreHub(safra, sem) {
   return lista;
 }
 
+function hojeISOHub() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function prazoDoSemestreHub(safra, sem) {
   const a = Number(safra.ano_ini), b = Number(safra.ano_fim) || a + 1;
   return sem === 'S1' ? `${a}-09-30` : `${b}-03-31`;
@@ -3154,7 +3257,7 @@ async function carregarPreviaCronograma() {
 
     // Coachings do semestre
     const { data: crono, error: eC } = await sbSafe(() => sb.from('cronograma_coaching')
-      .select('gerencia_id, matricula, tipo, status, mes, data_coaching, data_agendada')
+      .select('gerencia_id, matricula, lider_nome, tipo, status, mes, data_coaching, data_agendada, tecnico_nome')
       .eq('safra_id', safraId).eq('semestre', sem));
     if (eC) throw new Error('cronograma_coaching: ' + eC.message);
 
@@ -3180,15 +3283,24 @@ async function carregarPreviaCronograma() {
     (crono || []).forEach(c => {
       if (c.status === 'Inativo') return;
       if (!gersComInd.has(c.gerencia_id)) { semConfig.add(c.gerencia_id); return; }
-      const g = cont[c.gerencia_id] = cont[c.gerencia_id] || { insp: [0, 0], obs: [0, 0], lideres: new Set() };
+      const g = cont[c.gerencia_id] = cont[c.gerencia_id] || { insp: [0, 0], obs: [0, 0], lideres: new Set(), pend: { insp: [], obs: [] } };
       const k = c.tipo === 'Inspeção' ? 'insp' : 'obs';
       g[k][0]++;
       g.lideres.add(c.matricula);
       const dataReal = c.data_coaching || c.data_agendada || (c.mes ? c.mes + '-01' : null);
-      if (c.status === 'Realizado' && (!dataReal || dataReal <= prazo)) g[k][1]++;
+      const fmtD = d => d ? d.split('-').reverse().join('/') : '';
+      if (c.status === 'Realizado' && (!dataReal || dataReal <= prazo)) { g[k][1]++; return; }
+
+      // Não realizado no prazo → vira pendência (aparece nos slides de pendências da apresentação)
+      let st;
+      if (c.status === 'Realizado') st = 'Atrasado (feito em ' + fmtD(dataReal) + ')';
+      else if (hojeISOHub() > prazo) st = 'Atrasado';
+      else if (c.status === 'Agendado') st = 'Em andamento' + (c.data_agendada ? ' (agendado ' + fmtD(c.data_agendada) + ')' : '');
+      else st = 'Pendente';
+      g.pend[k].push({ nome: c.lider_nome || '', matricula: String(c.matricula || ''), cargo: c.tecnico_nome ? 'Técnico: ' + c.tecnico_nome : 'Líder', status: st });
     });
     // Gerências configuradas sem líderes no cronograma → 0 de 0 também no fechamento
-    gersComInd.forEach(id => { if (!cont[id]) cont[id] = { insp: [0, 0], obs: [0, 0], lideres: new Set() }; });
+    gersComInd.forEach(id => { if (!cont[id]) cont[id] = { insp: [0, 0], obs: [0, 0], lideres: new Set(), pend: { insp: [], obs: [] } }; });
 
     const gerIds = Object.keys(cont).map(Number).filter(id => estrutura.gerencias.some(g => g.id === id));
 
@@ -3229,8 +3341,9 @@ async function carregarPreviaCronograma() {
       const g = cont[id];
       const temFech = !!lancPor[id + '|' + mesFech];
       const outros = meses.filter(m => m !== mesFech && lancPor[id + '|' + m]).length;
+      const nPend = g.pend.insp.length + g.pend.obs.length;
       return `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${nomeGer(id)}</b></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${nomeGer(id)}</b>${nPend ? `<br><span style="font-size:11px;color:#c47d0e">${nPend} pendência(s) de líder</span>` : ''}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${g.lideres.size}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${fmtPar(g.insp)}<br><span style="font-size:11px;color:#999">atual: ${atualFech(id, indInsp.id)}</span></td>
         <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${fmtPar(g.obs)}<br><span style="font-size:11px;color:#999">atual: ${atualFech(id, indObs.id)}</span></td>
@@ -3279,7 +3392,8 @@ function operacoesCrono() {
       const g = p.cont[gid];
       ops.push({ gerId: gid, mes: m, lancId, fech,
         insp: fech ? g.insp : [0, 0],
-        obs:  fech ? g.obs  : [0, 0] });
+        obs:  fech ? g.obs  : [0, 0],
+        pend: fech ? g.pend : { insp: [], obs: [] } });
     });
   });
   return ops;
@@ -3337,6 +3451,17 @@ async function gravarApuracaoCronograma() {
         { lancamento_id: lancId, indicador_id: p.indObsId,  previsto: o.obs[0],  realizado: o.obs[1],  comentario }
       ]);
       if (eItens) throw eItens;
+
+      // Pendências por líder (substitui as antigas de coaching deste lançamento)
+      await sb.from('lancamento_pendencias').delete().eq('lancamento_id', lancId).in('indicador_id', [p.indInspId, p.indObsId]);
+      const linhasPend = [
+        ...o.pend.insp.map(x => ({ lancamento_id: lancId, indicador_id: p.indInspId, ...x })),
+        ...o.pend.obs.map(x  => ({ lancamento_id: lancId, indicador_id: p.indObsId,  ...x }))
+      ];
+      if (linhasPend.length) {
+        const { error: ePend } = await sb.from('lancamento_pendencias').insert(linhasPend);
+        if (ePend) console.warn('Pendências de coaching não gravadas (itens gravaram normal):', ePend.message);
+      }
 
       const { data: todosItens } = await sb.from('lancamento_itens').select('*').eq('lancamento_id', lancId);
       const indsGer = await getIndsGerencia(o.gerId, p.safraId);
