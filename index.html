@@ -555,6 +555,8 @@ const IMPORTACOES = {
             dica: 'Unidade, Diretoria, MÊS, ANO/SAFRA, PLANEJADO, REALIZADO' },
   crono:  { grupo: 'outras',  titulo: 'Coaching Liderança — Cronograma', acao: 'abrirApuracaoCronograma',
             dica: 'Lê o Cronograma de Coaching (sem planilha). Fechamento do semestre (set/mar) = realizado × previsto; demais meses = 0 de 0' },
+  ma:     { grupo: 'outras',  titulo: 'Meio Ambiente — Indicadores', acao: 'abrirApuracaoMA', botao: 'Apurar indicadores',
+            dica: 'Lê as vistorias do time de Meio Ambiente (sem planilha). Por gerência × indicador × mês: previsto = itens avaliados; realizado = conformes. Mês sem vistoria = 0 de 0' },
   coach:  { grupo: 'outras',  titulo: 'Coaching Liderança (planilha antiga)',  input: 'input-importar-planilha-coach', fn: 'importarPlanilhaCoachingLideranca',
             dica: 'Matricula, Colaborador, Gerência, Observação Realizada, Inspeção Realizada (o mês é escolhido na prévia)' },
   exames: { grupo: 'outras',  titulo: 'Exames Periódicos',   input: 'input-importar-periodico',      fn: 'importarPlanilhaExamesPeriodicos',
@@ -576,7 +578,7 @@ function renderListaImportacoes() {
       </div>
       <span class="imp-status" id="st-${chave}"></span>
       <button class="btn btn-sec" id="btn-${chave}" onclick="${cfg.acao ? cfg.acao + '()' : `document.getElementById('${cfg.input}').click()`}">
-        ${cfg.acao ? 'Apurar do cronograma' : (cfg.grupo === 'fechamento' ? 'Importar fechamento' : 'Selecionar arquivo')}
+        ${cfg.acao ? (cfg.botao || 'Apurar do cronograma') : (cfg.grupo === 'fechamento' ? 'Importar fechamento' : 'Selecionar arquivo')}
       </button>
     </div>`;
   const por = g => Object.entries(IMPORTACOES).filter(([, c]) => c.grupo === g).map(([k, c]) => linha(k, c)).join('');
@@ -3487,6 +3489,293 @@ async function gravarApuracaoCronograma() {
   alert(`Apuração concluída.\n${ok} lançamento(s) gravado(s).` + (erros.length ? `\n${erros.length} com erro (veja o console).` : ''));
   if (ok) onPeriodoLancarChange();
   else registrarLog('erro', 'Coaching — Cronograma', 'nenhum lançamento gravado');
+}
+
+// ===== Apuração de Meio Ambiente -> indicadores do bloco Meio Ambiente =====
+// Regra, por gerência × indicador × mês:
+//   previsto  = soma dos itens avaliados/previstos nas vistorias do mês
+//   realizado = soma dos itens conformes/realizados
+// Gerência configurada sem vistoria no mês = 0 de 0 (100 pontos), gravado só se já existe lançamento.
+
+const IND_MA_NOMES = [
+  'Manutenção dos aceiros (95% dos aceiros com manutenção)',
+  'Separação e destinação de Resíduos sólidos da saúde (100 % dos resíduos separados)',
+  'Evidencias de controle e monitoramento de moscas dos estábulos PB (100%)',
+  'Separação e destinação de resíduos (100% dos resíduos separados)',
+  'Inspeção caixa separadora de água e óleo',
+  'Monitoramento de Fumaça de Veiculos a Diesel (90 % dos veículos devem estar com padrão escala de Ringelmann )',
+  'Monitoramento da Fumaça das Caldeiras (90 % das análises devem estar com padrão escala de Ringelmann)',
+  'Evidencias que não há agrotóxicos vencidos (0 produtos estocados há mais de 6 meses )',
+  'Captação de Água (Volume captado X outorgado)',
+  'Monitoramento Pelo Pantera (Ocorrências de Incêndio-100% focos lançados no sistema pantera)',
+  'Manutenção Tratamento de Esgoto (90 % do plano de manutenção realizado)',
+  'Limpeza periodica da Caixa SAO',
+  'Manutenção periódica do Sistema Sump do posto de abastecimento (90% da manutenção realizada)',
+  'Plano de Aplicação de Vinhaça - PAV (100% do plano concluído e protocolado)',
+  'Nº de Termo de Compromisso de Recuperação Ambiental (TCRA)',
+  'Apresentação de Destinação de Embalagens de Agrotóxicos (100%)'
+];
+
+function normMA(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, '');
+}
+function curtoMA(n) { return String(n || '').split('(')[0].trim(); }
+
+function abrirApuracaoMA() {
+  _importAtual = 'ma';
+  const overlay = document.createElement('div');
+  overlay.id = 'overlay-ma';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:10px;max-width:1120px;width:95%;max-height:88vh;overflow:auto;padding:24px;">
+      <h3 style="margin:0 0 4px;color:#07583C">Meio Ambiente — apurar indicadores</h3>
+      <p style="color:#666;font-size:13px;margin:0 0 14px;line-height:1.5">
+        Lê as vistorias registradas pelo time de Meio Ambiente e grava os indicadores do bloco Meio Ambiente por gerência e mês.
+        Previsto = itens avaliados. Realizado = itens conformes. Gerência sem vistoria no mês fica 0 de 0.
+        Nada é salvo antes de você confirmar.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+        <div>
+          <label style="display:block;font-size:12px;color:#666;margin-bottom:4px">Safra</label>
+          <select id="ma-safra" style="padding:8px;border-radius:6px;border:1px solid #ccc;min-width:160px">
+            ${safrasData.map(s => `<option value="${s.id}">${s.nome}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn btn-sec" onclick="carregarPreviaMA()">Carregar prévia</button>
+      </div>
+      <div id="ma-previa" style="font-size:13px;color:#666">Escolha a safra e clique em "Carregar prévia".</div>
+      <div style="text-align:right;margin-top:16px">
+        <button onclick="document.getElementById('overlay-ma').remove()" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;margin-right:8px">Cancelar</button>
+        <button id="ma-btn-gravar" disabled style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer;opacity:.5">Confirmar e Gravar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+let _planoMA = null;
+
+async function carregarPreviaMA() {
+  const safraId = parseInt(document.getElementById('ma-safra').value, 10);
+  const safra = safrasData.find(s => s.id === safraId);
+  const box = document.getElementById('ma-previa');
+  const btnG = document.getElementById('ma-btn-gravar');
+  btnG.disabled = true; btnG.style.opacity = .5;
+  if (!safra) { box.innerHTML = 'Safra não encontrada.'; return; }
+  box.innerHTML = '<span class="spinner"></span> Lendo as vistorias...';
+
+  try {
+    const alvo = new Set(IND_MA_NOMES.map(normMA));
+    const indsMA = indicadores.filter(i => alvo.has(normMA(i.nome)) || normMA(i.bloco) === 'meioambiente');
+    if (!indsMA.length) { box.innerHTML = '<span style="color:#d93025">Nenhum indicador de Meio Ambiente encontrado no cadastro (ativo).</span>'; return; }
+    const indIds = indsMA.map(i => i.id);
+    const nomeInd = {}; indsMA.forEach(i => { nomeInd[i.id] = i.nome; });
+
+    const meses = getMesesSafra(safra).map(m => m.val);
+    const hojeMes = new Date().toISOString().substring(0, 7);
+
+    const { data: vist, error: eV } = await sbSafe(() => sb.from('vistorias_ma')
+      .select('gerencia_id, indicador_id, mes, previsto, realizado').eq('safra_id', safraId));
+    if (eV) throw new Error('vistorias_ma: ' + eV.message);
+
+    let { data: cfg, error: eCfg } = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id, indicador_id')
+      .eq('safra_id', safraId).eq('ativo', true).in('indicador_id', indIds));
+    if (eCfg) throw new Error('ind_gerencia_safra: ' + eCfg.message);
+    if (!cfg || !cfg.length) {
+      const r2 = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id, indicador_id').eq('ativo', true).in('indicador_id', indIds));
+      cfg = r2.data || [];
+    }
+    const pares = [];               // [gerId, indId] configurados
+    const cfgSet = new Set();
+    (cfg || []).forEach(c => {
+      const k = c.gerencia_id + '|' + c.indicador_id;
+      if (cfgSet.has(k) || !estrutura.gerencias.some(g => g.id === c.gerencia_id)) return;
+      cfgSet.add(k); pares.push([c.gerencia_id, c.indicador_id]);
+    });
+
+    // Soma gerência × indicador × mês
+    const cont = {};                // 'g|i' -> { ym: [previsto, realizado] }
+    const semConfig = new Set();
+    (vist || []).forEach(v => {
+      const k = v.gerencia_id + '|' + v.indicador_id;
+      if (!cfgSet.has(k)) { semConfig.add(k); return; }
+      const g = cont[k] = cont[k] || {};
+      const par = g[v.mes] = g[v.mes] || [0, 0];
+      par[0] += Number(v.previsto) || 0; par[1] += Number(v.realizado) || 0;
+    });
+
+    const gerIds = [...new Set(pares.map(p => p[0]))];
+    const { data: lancs, error: eL } = await sbSafe(() => sb.from('lancamentos').select('id, gerencia_id, mes')
+      .eq('safra_id', safraId).in('mes', meses).in('gerencia_id', gerIds.length ? gerIds : [-1]));
+    if (eL) throw new Error('lancamentos: ' + eL.message);
+    const lancPor = {};
+    (lancs || []).forEach(l => { lancPor[l.gerencia_id + '|' + l.mes] = l.id; });
+
+    const idsL = (lancs || []).map(l => l.id);
+    const itensAtuais = {};         // 'lancId|indId' -> item
+    for (let i = 0; i < idsL.length; i += 200) {
+      const lote = idsL.slice(i, i + 200);
+      const { data: its } = await sbSafe(() => sb.from('lancamento_itens').select('lancamento_id, indicador_id, previsto, realizado')
+        .in('lancamento_id', lote).in('indicador_id', indIds));
+      (its || []).forEach(it => { itensAtuais[it.lancamento_id + '|' + it.indicador_id] = it; });
+    }
+
+    _planoMA = { safraId, meses, hojeMes, cont, pares, lancPor, itensAtuais, nomeInd };
+
+    const nomeMes = m => ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.substring(5, 7)) - 1] + '/' + m.substring(2, 4);
+    const temVist = m => pares.some(([g, i]) => cont[g + '|' + i]?.[m]);
+    const chk = meses.map(m => {
+      const futuro = m > hojeMes;
+      return `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 12px 6px 0;font-size:12px;${futuro ? 'color:#aaa' : ''}">
+        <input type="checkbox" class="ma-mes" value="${m}" ${futuro ? 'disabled' : (temVist(m) || m === hojeMes ? 'checked' : '')} onchange="renderTabelaMA()">
+        ${nomeMes(m)}${futuro ? ' — futuro' : ''}</label>`;
+    }).join('');
+
+    const nomeGer = id => { const g = estrutura.gerencias.find(x => x.id === id); return g ? g.nome : 'Gerência ' + id; };
+    const avisos = [];
+    if (semConfig.size) avisos.push(`⚠️ ${semConfig.size} combinação(ões) gerência × indicador têm vistoria, mas o indicador não está configurado para a gerência na safra (ind_gerencia_safra). Não serão gravadas: ` +
+      [...semConfig].map(k => { const [g, i] = k.split('|').map(Number); return `${nomeGer(g)} / ${curtoMA(nomeInd[i])}`; }).join('; ') + '.');
+    const achados = new Set(indsMA.map(i => normMA(i.nome)));
+    const faltam = IND_MA_NOMES.filter(n => !achados.has(normMA(n)));
+    if (faltam.length) avisos.push(`⚠️ Não encontrei no cadastro: ${faltam.map(curtoMA).join(', ')}.`);
+
+    box.innerHTML = `
+      <div style="margin-bottom:10px;color:#333"><b>Meses que serão gravados:</b><br>${chk}</div>
+      <div id="ma-resumo" style="margin-bottom:10px;color:#07583C;font-weight:600"></div>
+      ${avisos.map(a => `<div style="background:#fff4e5;border:1px solid #ffd59e;border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:12px;color:#8a5a00">${a}</div>`).join('')}
+      <div style="font-size:12px;color:#666;margin-bottom:6px">Cada célula: <b>conformes de avaliados</b>. Embaixo, em cinza, o que está gravado hoje no IP. "—" = sem vistoria no mês.</div>
+      <div id="ma-tabela" style="overflow-x:auto"></div>`;
+    renderTabelaMA();
+    btnG.onclick = gravarApuracaoMA;
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<span style="color:#d93025">Erro: ${err.message}</span><br><span style="font-size:12px">Se o erro citar "vistorias_ma", rode antes o SQL de criação da tabela.</span>`;
+  }
+}
+
+// Agrupa por lançamento (gerência × mês): um recálculo de IP por lançamento
+function operacoesMA() {
+  const p = _planoMA;
+  if (!p) return [];
+  const mesesSel = [...document.querySelectorAll('.ma-mes:checked')].map(c => c.value);
+  const porLanc = {};
+  p.pares.forEach(([gid, iid]) => mesesSel.forEach(m => {
+    const par = p.cont[gid + '|' + iid]?.[m] || [0, 0];
+    const lancId = p.lancPor[gid + '|' + m] || null;
+    if (!par[0] && !lancId) return; // não cria lançamento só para gravar 0 de 0
+    const k = gid + '|' + m;
+    const op = porLanc[k] = porLanc[k] || { gerId: gid, mes: m, lancId, itens: [] };
+    op.itens.push({ indId: iid, previsto: par[0], realizado: par[1] });
+  }));
+  return Object.values(porLanc);
+}
+
+function renderTabelaMA() {
+  const p = _planoMA;
+  if (!p) return;
+  const mesesSel = [...document.querySelectorAll('.ma-mes:checked')].map(c => c.value);
+  const nomeMes = m => ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.substring(5, 7)) - 1] + '/' + m.substring(2, 4);
+  const gerInfo = id => estrutura.gerencias.find(x => x.id === id);
+  const rotGer = id => { const g = gerInfo(id); return g ? `${g.nome} <span style="color:#999">(${g.unidades?.nome || ''})</span>` : 'Gerência ' + id; };
+  const td = 'padding:6px 8px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap';
+
+  const porGer = {};
+  p.pares.forEach(([g, i]) => (porGer[g] = porGer[g] || []).push(i));
+  const ordemGer = Object.keys(porGer).map(Number).sort((a, b) => (gerInfo(a)?.nome || '').localeCompare(gerInfo(b)?.nome || ''));
+
+  const linhas = ordemGer.map(gid =>
+    `<tr><td colspan="${mesesSel.length + 1}" style="padding:7px 8px;background:#f7f9f6;font-weight:700;border-bottom:1px solid #eee">${rotGer(gid)}</td></tr>` +
+    porGer[gid].map(iid => {
+      const cels = mesesSel.map(m => {
+        const par = p.cont[gid + '|' + iid]?.[m];
+        const lid = p.lancPor[gid + '|' + m];
+        const it = lid && p.itensAtuais[lid + '|' + iid];
+        const atual = it ? `<br><span style="font-size:11px;color:#999">atual: ${it.realizado ?? 0} de ${it.previsto ?? 0}</span>` : '';
+        if (!par) return `<td style="${td};color:#bbb">${lid ? '0 de 0' : '—'}${atual}</td>`;
+        const cor = par[1] >= par[0] ? '#07583C' : '#B42318';
+        return `<td style="${td}"><b style="color:${cor}">${par[1]} de ${par[0]}</b>${atual}</td>`;
+      }).join('');
+      return `<tr><td style="padding:6px 8px 6px 20px;border-bottom:1px solid #eee">${curtoMA(p.nomeInd[iid])}</td>${cels}</tr>`;
+    }).join('')
+  ).join('');
+
+  document.getElementById('ma-tabela').innerHTML = mesesSel.length ? `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#f5f5f5"><th style="padding:6px 8px;text-align:left">Gerência / indicador</th>${mesesSel.map(m => `<th style="padding:6px 8px">${nomeMes(m)}</th>`).join('')}</tr></thead>
+      <tbody>${linhas || `<tr><td colspan="${mesesSel.length + 1}" style="padding:10px;color:#999">Nenhuma gerência com indicador de Meio Ambiente configurado.</td></tr>`}</tbody>
+    </table>` : '<span style="color:#999">Marque pelo menos um mês.</span>';
+
+  const ops = operacoesMA();
+  const nItens = ops.reduce((s, o) => s + o.itens.length, 0);
+  const nComVist = ops.reduce((s, o) => s + o.itens.filter(x => x.previsto).length, 0);
+  const btnG = document.getElementById('ma-btn-gravar');
+  document.getElementById('ma-resumo').textContent = ops.length
+    ? `${ops.length} lançamento(s) serão atualizados, com ${nItens} item(ns): ${nComVist} com vistoria e ${nItens - nComVist} com 0 de 0.`
+    : 'Nenhum lançamento a gravar com os meses marcados.';
+  btnG.disabled = !ops.length; btnG.style.opacity = ops.length ? 1 : .5;
+}
+
+async function gravarApuracaoMA() {
+  const p = _planoMA;
+  const ops = operacoesMA();
+  if (!p || !ops.length) return;
+  if (!confirm(`Gravar os indicadores de Meio Ambiente em ${ops.length} lançamento(s) do IP?\n\nOs itens desses indicadores nesses meses serão substituídos e o IP das gerências recalculado.`)) return;
+
+  const btn = document.getElementById('ma-btn-gravar');
+  btn.disabled = true;
+  let ok = 0; const erros = [];
+  const hoje = new Date().toLocaleDateString('pt-BR');
+
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    btn.textContent = `Gravando ${i + 1}/${ops.length}...`;
+    try {
+      let lancId = o.lancId;
+      if (!lancId) {
+        const { data: ex } = await sb.from('lancamentos').select('id')
+          .eq('gerencia_id', o.gerId).eq('safra_id', p.safraId).eq('mes', o.mes).limit(1);
+        lancId = ex?.[0]?.id || null;
+        if (!lancId) {
+          const { data: ins, error: eIns } = await sb.from('lancamentos').insert({
+            gerencia_id: o.gerId, safra_id: p.safraId, mes: o.mes, periodo: o.mes, atualizado_em: new Date().toISOString()
+          }).select('id');
+          if (eIns) throw eIns;
+          lancId = ins?.[0]?.id;
+        }
+      }
+
+      const { error: eDel } = await sb.from('lancamento_itens').delete()
+        .eq('lancamento_id', lancId).in('indicador_id', o.itens.map(x => x.indId));
+      if (eDel) throw eDel;
+      const { error: eItens } = await sb.from('lancamento_itens').insert(o.itens.map(x => ({
+        lancamento_id: lancId, indicador_id: x.indId, previsto: x.previsto, realizado: x.realizado,
+        comentario: x.previsto ? `Apurado das vistorias de Meio Ambiente em ${hoje}` : 'Sem vistoria de Meio Ambiente no mês (0 de 0)'
+      })));
+      if (eItens) throw eItens;
+
+      const { data: todosItens } = await sb.from('lancamento_itens').select('*').eq('lancamento_id', lancId);
+      const indsGer = await getIndsGerencia(o.gerId, p.safraId);
+      const pg = calcPontGer(todosItens || [], indsGer || []);
+      const { aud, mediaDir } = await recalcularAuditoriaEMediaDiretoria(o.gerId, o.mes, p.safraId, pg);
+      const { data: lancAtual } = await sb.from('lancamentos').select('ajuste_pontos').eq('id', lancId).limit(1);
+      const aj = lancAtual?.[0]?.ajuste_pontos || 0;
+
+      await sb.from('lancamentos').update({
+        pontuacao_gerencia: pg, media_diretoria: mediaDir, nota_auditoria: aud,
+        indice_base: calcIndice(pg, mediaDir, aud, 0), indice_prevencao: calcIndice(pg, mediaDir, aud, aj),
+        atualizado_em: new Date().toISOString()
+      }).eq('id', lancId);
+      ok++;
+    } catch (err) {
+      const g = estrutura.gerencias.find(x => x.id === o.gerId);
+      erros.push({ gerencia: g?.nome || o.gerId, mes: o.mes, erro: err.message });
+    }
+  }
+
+  document.getElementById('overlay-ma')?.remove();
+  if (erros.length) console.error('Erros na apuração de Meio Ambiente:', erros);
+  alert(`Apuração concluída.\n${ok} lançamento(s) gravado(s).` + (erros.length ? `\n${erros.length} com erro (veja o console).` : ''));
+  if (ok) onPeriodoLancarChange();
+  else registrarLog('erro', 'Meio Ambiente — Indicadores', 'nenhum lançamento gravado');
 }
 
 // ===== Importação de Fechamento Mensal Completo (pacote com todos os indicadores) =====
