@@ -1670,6 +1670,21 @@ async function gravarImportacaoWecheck(prontos, familiaIndicadores) {
 
   for (const chave in porLancamento) {
     const grupo = porLancamento[chave];
+    // Junta itens repetidos do mesmo indicador no mesmo lançamento (ex.: a planilha traz a
+    // safra escrita de dois jeitos). Sem isso, o insert manda 2 linhas iguais e o banco
+    // recusa com 409 (duplicate key).
+    const porInd = {};
+    grupo.itens.forEach(it => {
+      const k = it.indicador_id;
+      if (!porInd[k]) porInd[k] = { ...it, pessoas: [...(it.pessoas || [])] };
+      else {
+        porInd[k].previsto += it.previsto; porInd[k].realizado += it.realizado;
+        porInd[k].pessoas.push(...(it.pessoas || []));
+        console.warn('Indicador repetido no mesmo lançamento foi somado:', chave, k);
+      }
+    });
+    grupo.itens = Object.values(porInd);
+    const gerNomeErro = ((estrutura.gerencias || []).find(x => x.id === grupo.gerId) || {}).nome || grupo.gerId;
     try {
       // 1. Acha ou cria o lançamento do mês/gerência/safra
       const { data: ex } = await sb.from('lancamentos').select('id')
@@ -1686,13 +1701,24 @@ async function gravarImportacaoWecheck(prontos, familiaIndicadores) {
 
       // 2. Remove só os itens dos indicadores que estamos atualizando (preserva os demais)
       const idsIndicadores = grupo.itens.map(it => it.indicador_id);
-      await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).in('indicador_id', idsIndicadores);
+      const { error: eDel } = await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).in('indicador_id', idsIndicadores);
+      if (eDel) throw new Error('não consegui apagar os itens antigos: ' + eDel.message);
       const novasLinhas = grupo.itens.map(it => ({
         lancamento_id: lancId, indicador_id: it.indicador_id,
         previsto: it.previsto, realizado: it.realizado
       }));
       const { error: eItens } = await sb.from('lancamento_itens').insert(novasLinhas);
-      if (eItens) throw eItens;
+      if (eItens) {
+        // 23505 = já existe item desse indicador (o delete acima não removeu): atualiza no lugar
+        if (eItens.code !== '23505' && !String(eItens.message || '').includes('duplicate')) throw eItens;
+        for (const l of novasLinhas) {
+          const { data: upd, error: eUpd } = await sb.from('lancamento_itens')
+            .update({ previsto: l.previsto, realizado: l.realizado })
+            .eq('lancamento_id', lancId).eq('indicador_id', l.indicador_id).select('id');
+          if (eUpd) throw new Error('não consegui atualizar o item existente: ' + eUpd.message);
+          if (!upd || !upd.length) throw new Error('o item já existe, mas o Supabase não deixou apagar nem alterar (verifique as regras de acesso da tabela lancamento_itens)');
+        }
+      }
 
       // 2b. Grava o detalhe por pessoa (nome, cargo, status) — pra dar pra ver
       // "quem não fez" depois, sem precisar abrir a planilha anexada.
@@ -1730,7 +1756,7 @@ async function gravarImportacaoWecheck(prontos, familiaIndicadores) {
 
       ok++;
     } catch (err) {
-      erros.push({ chave, erro: err.message });
+      erros.push({ gerencia: gerNomeErro, mes: grupo.mes, erro: err.message || String(err) });
     }
   }
   return { ok, erros };
