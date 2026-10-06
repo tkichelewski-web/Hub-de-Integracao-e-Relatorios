@@ -150,8 +150,6 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
         <div class="grupo-titulo">Outras fontes</div>
         <div id="lista-outras"></div>
 
-        <div class="imp-destaque" id="lista-fechamento"></div>
-
         <div class="log">
           <h3>Atividade desta sessão</h3>
           <ul id="log-lista"><li class="vazio">Nenhuma importação feita ainda.</li></ul>
@@ -546,15 +544,13 @@ setInterval(renovarTokenProativo, 4 * 60 * 1000);
 // ═════════════════════════════════════════════════════════════════
 const IMPORTACOES = {
   insp:   { grupo: 'wecheck', titulo: 'Inspeção',            input: 'input-importar-planilha',       fn: 'importarPlanilhaWecheckInspecoes',
-            dica: 'CSV do Power BI: UNIDADE, GERENCIA, SAFRA, MÊS, FREQUÊNCIA, PREVISTO, REALIZADO (também aceita o formato antigo)' },
+            dica: 'GERENCIA, UNIDADE, Mês/Ano, Frequência Inspeção, META, REALIZADO (+ Quinzena/Semana)' },
   obs:    { grupo: 'wecheck', titulo: 'Observação',          input: 'input-importar-planilha-obs',   fn: 'importarPlanilhaWecheckObservacoes',
             dica: 'GERENCIA, UNIDADE, MES/ANO-SAFRA, FREQUENCIA, META, REALIZADO (+ SEMANA)' },
   pa:     { grupo: 'wecheck', titulo: 'Plano de Ação',       input: 'input-importar-planilha-pa',    fn: 'importarPlanilhaWecheckPlanoAcao',
             dica: 'GERENCIA, UNIDADE2/UNIDADE, MES, ANO/SAFRA, Tipo de Plano de Ação' },
   sim:    { grupo: 'wecheck', titulo: 'Simulados',           input: 'input-importar-planilha-sim',   fn: 'importarPlanilhaWecheckSimulados',
             dica: 'Unidade, Diretoria, MÊS, ANO/SAFRA, PLANEJADO, REALIZADO' },
-  crono:  { grupo: 'outras',  titulo: 'Coaching Liderança — Cronograma', acao: 'abrirApuracaoCronograma',
-            dica: 'Lê o Cronograma de Coaching (sem planilha). Fechamento do semestre (set/mar) = realizado × previsto; demais meses = 0 de 0' },
   ma:     { grupo: 'outras',  titulo: 'Meio Ambiente — Indicadores', acao: 'abrirApuracaoMA', botao: 'Apurar indicadores',
             dica: 'Lê as vistorias do time de Meio Ambiente (sem planilha). Por gerência × indicador × mês: previsto = itens avaliados; realizado = conformes. Mês sem vistoria = 0 de 0' },
   coach:  { grupo: 'outras',  titulo: 'Coaching Liderança (planilha antiga)',  input: 'input-importar-planilha-coach', fn: 'importarPlanilhaCoachingLideranca',
@@ -563,8 +559,6 @@ const IMPORTACOES = {
             dica: 'GERENCIA, Mes Nome, Safra, Total Previsto Inicial, Total Realizado' },
   trein:  { grupo: 'outras',  titulo: 'Matriz de Treinamento', input: 'input-importar-treinamento',  fn: 'importarPlanilhaTreinamento',
             dica: 'UNIDADE, GERÊNCIA, MÊS, SAFRA, PREVISTO, REALIZADO' },
-  fech:   { grupo: 'fechamento', titulo: 'Fechamento Mensal', input: 'input-importar-fechamento',    fn: 'importarFechamentoMensal',
-            dica: 'Arquivo único com todas as abas do fechamento. Grava o mês inteiro de todas as gerências — use no fechamento, não no dia a dia.' }
 };
 
 let _importAtual = null;
@@ -584,7 +578,8 @@ function renderListaImportacoes() {
   const por = g => Object.entries(IMPORTACOES).filter(([, c]) => c.grupo === g).map(([k, c]) => linha(k, c)).join('');
   document.getElementById('lista-wecheck').innerHTML = por('wecheck');
   document.getElementById('lista-outras').innerHTML = por('outras');
-  document.getElementById('lista-fechamento').innerHTML = por('fechamento');
+  const elFech = document.getElementById('lista-fechamento');
+  if (elFech) elFech.innerHTML = por('fechamento');
 }
 
 async function executarImportacao(chave, evento) {
@@ -1334,9 +1329,9 @@ function anoDaSafraParaMes(safraTxt, mesNum) {
 
 function montarMes(l) {
   const direto = campo(l, ['MES', 'Mes', 'Mês/Ano', 'AnoMes']);
-  if (direto && /^\d{4}-\d{2}$/.test(direto.toString().trim())) return direto.toString().trim();
+  if (direto && /^\d{4}-\d{2}$/.test(direto.trim())) return direto.trim();
 
-  const mesTexto = (campo(l, ['Mês', 'MÊS', 'MES', 'MES_NOME', 'Mes_Nome']) || '').toString().trim().toLowerCase();
+  const mesTexto = (campo(l, ['Mês', 'MES', 'MES_NOME', 'Mes_Nome']) || '').toString().trim().toLowerCase();
   const num = MESES_PT[mesTexto];
   if (!num) return null;
 
@@ -1393,17 +1388,6 @@ const ABA_INDICADOR_DIRETO = {
 
 function acharIndicadorDaLinha(freq, quinzenaLinha, semanaLinha) {
   const f = normaliza(freq);
-  // Formato novo (CSV do Power BI): a própria coluna FREQUÊNCIA já diz o período
-  // "1ª quinzena" / "2ª quinzena" / "Semana 1..4" / "2º Trim (Jul-Set)" / "setembro"
-  const mSem = f.match(/^SEMANA\s*(\d+)/);
-  if (mSem && NOME_IND_SEMANA[parseInt(mSem[1], 10)]) return NOME_IND_SEMANA[parseInt(mSem[1], 10)];
-  if (f.includes('QUINZENA')) {
-    if (f.startsWith('1')) return NOME_IND_QUINZENA_1;
-    if (f.startsWith('2')) return NOME_IND_QUINZENA_2;
-  }
-  if (f.includes('TRIM')) return NOME_IND_TRIMESTRAL;
-  if (MESES_PT[(freq || '').toString().trim().toLowerCase()]) return NOME_IND_MENSAL;
-  // Formato antigo: MENSAL/TRIMESTRAL/QUINZENAL/SEMANAL (+ coluna Quinzena/Semana)
   if (ABA_INDICADOR_DIRETO[f]) return ABA_INDICADOR_DIRETO[f];
   if (f === 'QUINZENAL') {
     const q = (quinzenaLinha || '').trim();
@@ -1451,7 +1435,7 @@ async function importarPlanilhaWecheckInspecoes(evento) {
       const unidadeNome = (campo(l, ['UNIDADE']) || '').trim();
       const mes = montarMes(l);
       const safraTxt = (campo(l, ['ANO/SAFRA', 'Ano Safra', 'ANO_SAFRA', 'SAFRA']) || '').toString().trim();
-      const freq = campo(l, ['FREQUENCIA', 'FREQUÊNCIA', 'Frequência', 'Frequencia', 'Frequência Inspeção', 'Frequencia Inspecao']);
+      const freq = campo(l, ['FREQUENCIA', 'Frequência Inspeção', 'Frequencia Inspecao']);
       if (!gerNome || !unidadeNome || !mes || !freq) { linhasIgnoradas.push({ gerNome, unidadeNome, mes, freq }); return; }
 
       const quinzenaLinha = campo(l, ['QUINZENA', 'Quinzena']);
@@ -1459,11 +1443,8 @@ async function importarPlanilhaWecheckInspecoes(evento) {
       const nomeIndicador = acharIndicadorDaLinha(freq, quinzenaLinha, semanaLinha);
       if (!nomeIndicador) { linhasIgnoradas.push({ gerNome, unidadeNome, mes, freq, semanaLinha }); return; }
 
-      const meta = parseFloat(campo(l, ['META', 'Meta Dinamica Safra total geral', 'Meta', 'PREVISTO', 'Previsto'])) || 0;
-      const realBruto = parseFloat(campo(l, ['REALIZADO', 'Realizado_AteHoje', 'Realizado'])) || 0;
-      // Realizado de cada pessoa/período fica limitado ao previsto: quem fez a mais
-      // não compensa quem atrasou, e afastado (previsto 0) não soma realizado.
-      const real = Math.min(realBruto, meta);
+      const meta = parseFloat(campo(l, ['META', 'Meta Dinamica Safra total geral', 'Meta'])) || 0;
+      const real = parseFloat(campo(l, ['REALIZADO', 'Realizado_AteHoje', 'Realizado'])) || 0;
       const chave = gerNome + '|' + unidadeNome + '|' + mes + '|' + nomeIndicador;
       if (!grupos[chave]) grupos[chave] = { gerNome, unidadeNome, mes, safraTxt, nomeIndicador, previsto: 0, realizado: 0, pessoas: [] };
       grupos[chave].previsto += meta;
@@ -1480,7 +1461,7 @@ async function importarPlanilhaWecheckInspecoes(evento) {
 
     const listaGrupos = Object.values(grupos);
     if (!listaGrupos.length) {
-      alert('Não encontrei nenhuma linha válida. Confira as colunas UNIDADE, GERENCIA, SAFRA, MÊS, FREQUÊNCIA (1ª quinzena, 2ª quinzena, Semana 1 a 4, mês ou trimestre), PREVISTO e REALIZADO.');
+      alert('Não encontrei nenhuma linha válida. Confira se cada tabela tem as colunas GERENCIA, UNIDADE, Mês/Ano (ou MES), "Frequência Inspeção", META, REALIZADO — e, para Quinzenal, coluna Quinzena, ou para Semanal, coluna Semana (Semana 1 a 4).');
       return;
     }
 
