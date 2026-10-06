@@ -198,7 +198,7 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
           O arquivo terá:
           <ol>
             <li>Capa com mês e diretoria (ou com o nome da gerência, quando o arquivo é de uma gerência só)</li>
-            <li>Um slide por gerência: pontuação base, ajustes, nota de auditoria, IP final e a tabela de indicadores (gerências com muitos indicadores continuam num segundo slide)</li>
+            <li>Um slide por gerência: pontuação base, ajustes, nota de auditoria e a tabela de indicadores (gerências com muitos indicadores continuam num segundo slide)</li>
             <li>Quando a gerência tiver pendências (status pendente, atrasada ou em andamento), um slide com a lista delas logo em seguida</li>
           </ol>
         </div>
@@ -1179,12 +1179,11 @@ function slidesGerencia(pptx, g, info) {
 
     const { wPG, wMD, wAUD } = g.pesos;
     const pct = w => Math.round(w * 100) + '%';
-    cardKPI(pptx, s, 0.5, 2.95, 'Pontuação base', fmt(g.base),
+    cardKPI(pptx, s, 0.5, 4.03, 'Pontuação base', fmt(g.base),
       `Ger. ${fmt(g.pg)} × ${pct(wPG)} + Dir. ${fmt(g.mdVal)} × ${pct(wMD)} + Aud. ${fmt(g.aud)} × ${pct(wAUD)}`);
-    cardKPI(pptx, s, 3.57, 2.95, 'Ajustes', (g.aj > 0 ? '+' : '') + fmt(g.aj), g.ajusteTexto,
+    cardKPI(pptx, s, 4.65, 4.03, 'Ajustes', (g.aj > 0 ? '+' : '') + fmt(g.aj), g.ajusteTexto,
       g.aj >= 0 ? COR.verde : COR.atencao);
-    cardKPI(pptx, s, 6.64, 2.85, 'Nota de auditoria', fmt(g.aud), `Peso de ${pct(wAUD)} no índice`);
-    cardIP(pptx, s, g);
+    cardKPI(pptx, s, 8.80, 4.03, 'Nota de auditoria', fmt(g.aud), `Peso de ${pct(wAUD)} no índice`);
 
     if (!pag.length) {
       s.addText('Nenhum indicador lançado para esta gerência no mês.', {
