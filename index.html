@@ -1397,6 +1397,16 @@ const ABA_INDICADOR_DIRETO = {
 
 function acharIndicadorDaLinha(freq, quinzenaLinha, semanaLinha) {
   const f = normaliza(freq);
+  // Formato novo: a coluna FREQUÊNCIA já traz o período ("Semana 1", "1ª quinzena", "2º Trim (...)", "outubro")
+  const mSem = f.match(/^SEMANA\s*(\d+)/);
+  if (mSem && NOME_IND_SEMANA[parseInt(mSem[1], 10)]) return NOME_IND_SEMANA[parseInt(mSem[1], 10)];
+  if (f.includes('QUINZENA')) {
+    if (f.startsWith('1')) return NOME_IND_QUINZENA_1;
+    if (f.startsWith('2')) return NOME_IND_QUINZENA_2;
+  }
+  if (f.includes('TRIM')) return NOME_IND_TRIMESTRAL;
+  if (MESES_PT[(freq || '').toString().trim().toLowerCase()]) return NOME_IND_MENSAL;
+  // Formato antigo: MENSAL/TRIMESTRAL/QUINZENAL/SEMANAL (+ colunas Quinzena/Semana)
   if (ABA_INDICADOR_DIRETO[f]) return ABA_INDICADOR_DIRETO[f];
   if (f === 'QUINZENAL') {
     const q = (quinzenaLinha || '').trim();
@@ -1439,12 +1449,19 @@ async function importarPlanilhaWecheckInspecoes(evento) {
     const grupos = {};
     const linhasIgnoradas = [];
 
-    todasLinhas.forEach(l => {
-      const gerNome = (campo(l, ['GERENCIA']) || '').trim();
-      const unidadeNome = (campo(l, ['UNIDADE']) || '').trim();
-      const mes = montarMes(l);
-      const safraTxt = (campo(l, ['ANO/SAFRA', 'Ano Safra', 'ANO_SAFRA', 'SAFRA']) || '').toString().trim();
-      const freq = campo(l, ['FREQUENCIA', 'Frequência Inspeção', 'Frequencia Inspecao']);
+    todasLinhas.forEach(lBruta => {
+      const l = linhaComChavesTrimadas(lBruta);
+      const gerNome = (campo(l, ['GERENCIA', 'GERÊNCIA', 'Gerência']) || '').toString().trim();
+      const unidadeNome = (campo(l, ['UNIDADE', 'Unidade']) || '').toString().trim();
+      const safraTxt = normalizarSafraCurta(campo(l, ['ANO/SAFRA', 'Ano Safra', 'ANO_SAFRA', 'SAFRA', 'Safra']));
+      let mes = montarMes(l);
+      if (!mes) {
+        // Formato novo: coluna "MÊS" com o nome do mês + coluna SAFRA
+        const num = MESES_PT[(campo(l, ['MÊS', 'Mês', 'MES', 'Mes Nome']) || '').toString().trim().toLowerCase()];
+        const ano = num ? anoDaSafraParaMes(safraTxt, parseInt(num, 10)) : null;
+        mes = (ano && num) ? ano + '-' + num : null;
+      }
+      const freq = campo(l, ['FREQUENCIA', 'FREQUÊNCIA', 'Frequência', 'Frequência Inspeção', 'Frequencia Inspecao']);
       if (!gerNome || !unidadeNome || !mes || !freq) { linhasIgnoradas.push({ gerNome, unidadeNome, mes, freq }); return; }
 
       const quinzenaLinha = campo(l, ['QUINZENA', 'Quinzena']);
@@ -1452,7 +1469,7 @@ async function importarPlanilhaWecheckInspecoes(evento) {
       const nomeIndicador = acharIndicadorDaLinha(freq, quinzenaLinha, semanaLinha);
       if (!nomeIndicador) { linhasIgnoradas.push({ gerNome, unidadeNome, mes, freq, semanaLinha }); return; }
 
-      const meta = parseFloat(campo(l, ['META', 'Meta Dinamica Safra total geral', 'Meta'])) || 0;
+      const meta = parseFloat(campo(l, ['META', 'Meta Dinamica Safra total geral', 'Meta', 'PREVISTO', 'Previsto'])) || 0;
       const real = parseFloat(campo(l, ['REALIZADO', 'Realizado_AteHoje', 'Realizado'])) || 0;
       const chave = gerNome + '|' + unidadeNome + '|' + mes + '|' + nomeIndicador;
       if (!grupos[chave]) grupos[chave] = { gerNome, unidadeNome, mes, safraTxt, nomeIndicador, previsto: 0, realizado: 0, pessoas: [] };
@@ -1470,7 +1487,7 @@ async function importarPlanilhaWecheckInspecoes(evento) {
 
     const listaGrupos = Object.values(grupos);
     if (!listaGrupos.length) {
-      alert('Não encontrei nenhuma linha válida. Confira se cada tabela tem as colunas GERENCIA, UNIDADE, Mês/Ano (ou MES), "Frequência Inspeção", META, REALIZADO — e, para Quinzenal, coluna Quinzena, ou para Semanal, coluna Semana (Semana 1 a 4).');
+      alert('Não encontrei nenhuma linha válida. Confira as colunas UNIDADE, GERENCIA, SAFRA, MÊS, FREQUÊNCIA, PREVISTO e REALIZADO.');
       return;
     }
 
