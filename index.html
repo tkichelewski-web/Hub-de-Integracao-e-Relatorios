@@ -1074,23 +1074,48 @@ function corStatusPend(st) {
   return COR.minimo; // pendente / em andamento
 }
 
-// Slide(s) com a lista do que está pendente na gerência
+// Slide(s) com a lista do que está pendente na gerência.
+// Quebra as páginas pela ALTURA estimada de cada linha (textos longos ocupam várias linhas),
+// para a tabela nunca passar do rodapé do slide.
+const PEND_COLW = [2.6, 4.9, 2.43, 1.2, 1.2];        // soma 12,33 pol
+const PEND_TOPO = 1.65, PEND_LIMITE = 6.9;           // a tabela vai de 1,65 até no máximo 6,9 pol
+const PEND_LINHA = 0.155, PEND_FOLGA = 0.09;         // altura de uma linha de texto (9 pt) e margem da célula
+function alturaLinhaPend(textos) {
+  let linhas = 1;
+  textos.forEach((t, i) => {
+    const porLinha = Math.max(8, Math.floor((PEND_COLW[i] - 0.17) * 15.5)); // ~15,5 caracteres por polegada em Arial 9
+    const n = String(t || '').split('\n').reduce((s, parte) => s + Math.max(1, Math.ceil(parte.length / porLinha)), 0);
+    if (n > linhas) linhas = n;
+  });
+  return Math.max(0.28, linhas * PEND_LINHA + PEND_FOLGA);
+}
 function slidesPendencias(pptx, g, info) {
   if (!g.pendencias.length) return;
   const nAtras = g.pendencias.filter(p => /ATRAS/.test(normaliza(p.status))).length;
-  for (let i = 0; i < g.pendencias.length; i += PEND_POR_SLIDE) {
-    const pag = g.pendencias.slice(i, i + PEND_POR_SLIDE);
+
+  // Monta as páginas pela altura
+  const alturaCab = 0.3, disponivel = PEND_LIMITE - PEND_TOPO - alturaCab;
+  const paginas = [];
+  let atual = [], usada = 0;
+  g.pendencias.forEach(p => {
+    const h = alturaLinhaPend([p.indicador, p.nome || '—', p.cargo || '—', p.matricula || '—', p.status || '—']);
+    if (atual.length && usada + h > disponivel) { paginas.push(atual); atual = []; usada = 0; }
+    atual.push({ p, h }); usada += h;
+  });
+  if (atual.length) paginas.push(atual);
+
+  paginas.forEach((pag, nPag) => {
     const s = pptx.addSlide();
-    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — pendências' }, info, i > 0);
+    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — pendências' }, info, nPag > 0);
     s.addText([
       { text: `${g.pendencias.length} pendência(s)`, options: { bold: true, color: COR.atencao } },
-      { text: `   |   ${nAtras} atrasada(s)   |   ${g.pendencias.length - nAtras} pendente(s) / em andamento`, options: { color: COR.muted } }
+      { text: `   |   ${nAtras} atrasada(s)   |   ${g.pendencias.length - nAtras} pendente(s) / em andamento` + (paginas.length > 1 ? `   |   página ${nPag + 1} de ${paginas.length}` : ''), options: { color: COR.muted } }
     ], { x: 0.5, y: 1.22, w: 12.33, h: 0.35, fontFace: FONTE, fontSize: 12, margin: 0, valign: 'middle' });
 
     const hdr = t => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde } } });
     const rows = [[hdr('Indicador'), hdr('Pendência (pessoa / ação)'), hdr('Cargo / Responsável'), hdr('Matrícula / Nº'),
                    { text: 'Status', options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: 'center' } }]];
-    pag.forEach((p, k) => {
+    pag.forEach(({ p }, k) => {
       const fill = { color: k % 2 ? COR.zebra : 'FFFFFF' };
       rows.push([
         { text: p.indicador, options: { fill, color: COR.muted } },
@@ -1101,12 +1126,13 @@ function slidesPendencias(pptx, g, info) {
       ]);
     });
     s.addTable(rows, {
-      x: 0.5, y: 1.65, w: 12.33,
-      colW: [3.0, 4.13, 2.4, 1.4, 1.4],
-      rowH: 0.3, fontFace: FONTE, fontSize: 9.5, color: COR.tinta, valign: 'middle',
+      x: 0.5, y: PEND_TOPO, w: 12.33,
+      colW: PEND_COLW,
+      rowH: [alturaCab, ...pag.map(x => x.h)],
+      fontFace: FONTE, fontSize: 9, color: COR.tinta, valign: 'middle', autoPage: false,
       border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6]
     });
-  }
+  });
 }
 
 // Semestre do coaching a partir do mês da apresentação (S1 = abr–set, S2 = out–mar)
