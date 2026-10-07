@@ -824,7 +824,7 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
   itens.forEach(it => (itensPorLanc[it.lancamento_id] = itensPorLanc[it.lancamento_id] || []).push(it));
 
   // Pendências (lancamento_pendencias) — mesmo critério da aba Pendências do sistema
-  // principal: status "pendente", "atrasad(a)" ou "andamento". Paginado de 1000 em 1000.
+  // principal: status "pendente", "atrasad(a)", "andamento" ou "A realizar até…". Paginado de 1000 em 1000.
   progresso(18, 'Buscando pendências...');
   const pendPorItem = {}; // chave lancamento_id|indicador_id
   for (let i = 0; i < ids.length; i += 10) {
@@ -832,11 +832,11 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
     for (let de = 0; ; de += 1000) {
       const { data, error: e3 } = await sbSafe(() => sb.from('lancamento_pendencias').select('*')
         .in('lancamento_id', lote)
-        .or('status.ilike.%pendente%,status.ilike.%atrasad%,status.ilike.%andamento%')
+        .or('status.ilike.%pendente%,status.ilike.%atrasad%,status.ilike.%andamento%,status.ilike.%a realizar%')
         .range(de, de + 999));
       if (e3) { console.warn('Pendências não carregadas:', e3.message); break; }
       (data || []).forEach(p => {
-        if (!/pendente|atrasad|andamento/i.test(p.status || '')) return;
+        if (!/pendente|atrasad|andamento|a realizar/i.test(p.status || '')) return;
         const k = p.lancamento_id + '|' + p.indicador_id;
         (pendPorItem[k] = pendPorItem[k] || []).push(p);
       });
@@ -1036,7 +1036,7 @@ function cardIP(pptx, s, g) {
 function tabelaIndicadores(s, linhasPagina, g, ultimaPagina) {
   const hdr = (t, al = 'center') => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: al } });
   const rows = [[hdr('Bloco', 'left'), hdr('Indicador', 'left'), hdr('Previsto'), hdr('Realizado / Nota'),
-                 hdr('Atingimento'), hdr('Peso'), hdr('Pontos'), hdr('Pendências')]];
+                 hdr('Atingimento'), hdr('Peso'), hdr('Pontos')]];
   linhasPagina.forEach((r, i) => {
     const fill = { color: i % 2 ? COR.zebra : 'FFFFFF' };
     const corAt = r.ating >= 100 ? COR.verde : COR.atencao;
@@ -1047,22 +1047,19 @@ function tabelaIndicadores(s, linhasPagina, g, ultimaPagina) {
       { text: r.realizado, options: { fill, align: 'center' } },
       { text: fmt(r.ating) + '%', options: { fill, align: 'center', bold: true, color: corAt } },
       { text: fmtNum(r.peso), options: { fill, align: 'center' } },
-      { text: fmt(r.contrib, 2), options: { fill, align: 'center' } },
-      { text: r.pend ? String(r.pend) : '—', options: { fill, align: 'center', bold: !!r.pend, color: r.pend ? COR.atencao : COR.muted } }
+      { text: fmt(r.contrib, 2), options: { fill, align: 'center' } }
     ]);
   });
   if (ultimaPagina) {
     const f = { color: COR.totalFill };
-    const totPend = g.pendencias.length;
     rows.push([
       { text: 'Pontuação da gerência', options: { fill: f, bold: true, colspan: 6, align: 'right' } },
-      { text: fmt(g.pg, 2), options: { fill: f, bold: true, align: 'center', color: COR.verde } },
-      { text: totPend ? String(totPend) : '—', options: { fill: f, bold: true, align: 'center', color: totPend ? COR.atencao : COR.muted } }
+      { text: fmt(g.pg, 2), options: { fill: f, bold: true, align: 'center', color: COR.verde } }
     ]);
   }
   s.addTable(rows, {
     x: 0.5, y: TABELA_Y, w: 12.33,
-    colW: [1.45, 4.15, 1.0, 1.3, 1.2, 0.8, 1.13, 1.3],
+    colW: [1.75, 5.15, 1.0, 1.35, 1.2, 0.8, 1.08],
     rowH: 0.32, fontFace: FONTE, fontSize: 10, color: COR.tinta, valign: 'middle',
     border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6]
   });
@@ -2317,6 +2314,48 @@ async function importarPlanilhaWecheckPlanoAcao(evento) {
     });
     const prontos = Object.values(mesclados);
 
+    // Ações cujo prazo foi mudado para outro mês somem do relatório daquele mês. O que já
+    // estava gravado no IP para esse mês (gerência × tipo) e não aparece mais no relatório
+    // vira 0 de 0. Só para os meses e unidades que vieram no arquivo.
+    try {
+      const PA_NOMES = [NOME_IND_PA_INSPECOES, NOME_IND_PA_SIMULADOS, NOME_IND_PA_ABRANGENCIA, NOME_IND_PA_ACID_INC, NOME_IND_PA_ERGONOMIA];
+      const indsPA = PA_NOMES.map(acharIndicadorPorNome).filter(Boolean);
+      const { data: safrasB } = await sb.from('safras').select('id,ano_ini,ano_fim');
+      const safraIdDe = txt => { const m = (txt || '').match(/(\d{4})\s*\/\s*(\d{4})/); if (!m) return null; const s = (safrasB || []).find(x => x.ano_ini === +m[1] && x.ano_fim === +m[2]); return s ? s.id : null; };
+      const mesesImp = {}; prontos.forEach(p => { const sid = safraIdDe(p.safraTxt); if (sid) mesesImp[p.mes] = { safraId: sid, safraTxt: p.safraTxt }; });
+      const nomeUn = id => normaliza(((unids || []).find(u => u.id === id) || {}).nome);
+      const unCobertas = new Set(prontos.map(p => nomeUn(((gers || []).find(g => g.id === p.gerId) || {}).unidade_id)).flatMap(n => n.split('/')));
+      const cobre = g => nomeUn(g.unidade_id).split('/').some(n => unCobertas.has(n));
+      const jaVem = new Set(prontos.map(p => p.gerId + '|' + p.mes + '|' + p.indicadorId));
+      const meses = Object.keys(mesesImp);
+      if (meses.length && indsPA.length) {
+        const { data: lancs } = await sb.from('lancamentos').select('id,gerencia_id,mes').in('mes', meses).in('safra_id', [...new Set(meses.map(m => mesesImp[m].safraId))]);
+        const idsL = (lancs || []).map(l => l.id);
+        const itens = [];
+        for (let i = 0; i < idsL.length; i += 200) {
+          const { data: its } = await sb.from('lancamento_itens').select('lancamento_id,indicador_id,previsto,realizado')
+            .in('lancamento_id', idsL.slice(i, i + 200)).in('indicador_id', indsPA.map(x => x.id));
+          itens.push(...(its || []));
+        }
+        const saiu = [];
+        itens.forEach(it => {
+          if (!(Number(it.previsto) > 0)) return;
+          const l = lancs.find(x => x.id === it.lancamento_id); if (!l) return;
+          const g = (gers || []).find(x => x.id === l.gerencia_id); if (!g || !cobre(g)) return;
+          if (jaVem.has(g.id + '|' + l.mes + '|' + it.indicador_id)) return;
+          const ind = indsPA.find(x => x.id === it.indicador_id);
+          saiu.push({ gerNome: g.nome, unidadeNome: ((unids || []).find(u => u.id === g.unidade_id) || {}).nome || '', mes: l.mes,
+            safraTxt: mesesImp[l.mes].safraTxt, nomeIndicador: ind.nome, gerId: g.id, indicadorId: ind.id, peso: ind.peso,
+            previsto: 0, realizado: 0, pessoas: [], antes: it.realizado + ' de ' + it.previsto });
+        });
+        if (saiu.length) {
+          const det = saiu.slice(0, 12).map(x => `- ${x.gerNome} ${x.mes} / ${x.nomeIndicador}: estava ${x.antes}`).join('\n');
+          alert(`${saiu.length} item(ns) de plano de ação que estavam no IP não aparecem mais no relatório desse mês (prazo das ações mudou para outro mês):\n\n${det}${saiu.length > 12 ? '\n... e mais ' + (saiu.length - 12) : ''}\n\nEles vão entrar na prévia como 0 de 0. Desmarque a gerência na prévia se não quiser mexer nela.`);
+          prontos.push(...saiu);
+        }
+      }
+    } catch (e) { console.warn('Não consegui conferir os itens que saíram do relatório:', e); }
+
     if (semMatch.length) {
       const detalhe = semMatch.slice(0, 10).map(s =>
         `- ${s.gerNome} (${s.unidadeNome}) / ${s.nomeIndicador} (${s.erroGer || ''}${s.erroGer && !s.ind ? ' e ' : ''}${!s.ind ? 'indicador não encontrado' : ''})`
@@ -2565,13 +2604,24 @@ async function gravarImportacaoWecheckPA(prontos) {
       }
 
       const idsIndicadores = grupo.itens.map(it => it.indicador_id);
-      await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).in('indicador_id', idsIndicadores);
+      const { error: eDel } = await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).in('indicador_id', idsIndicadores);
+      if (eDel) throw new Error('não consegui apagar os itens antigos: ' + eDel.message);
       const novasLinhas = grupo.itens.map(it => ({
         lancamento_id: lancId, indicador_id: it.indicador_id,
         previsto: it.previsto, realizado: it.realizado
       }));
       const { error: eItens } = await sb.from('lancamento_itens').insert(novasLinhas);
       if (eItens) throw eItens;
+
+      // Tipos de plano de ação que existiam neste lançamento mas não vieram no relatório
+      // (o prazo das ações mudou para outro mês): ficam 0 de 0, igual às pendências,
+      // que já são limpas para os 5 tipos.
+      const faltando = idsTodosIndicadoresPA.filter(id => !idsIndicadores.includes(id));
+      if (faltando.length) {
+        const { error: eZero } = await sb.from('lancamento_itens').update({ previsto: 0, realizado: 0 })
+          .eq('lancamento_id', lancId).in('indicador_id', faltando);
+        if (eZero) throw new Error('não consegui zerar os tipos que saíram do relatório: ' + eZero.message);
+      }
 
       // Detalhe por ação (reaproveita a mesma tabela de pendências — aqui "pendente"
       // vira "atrasada"; nome/cargo viram ação/responsável, matrícula vira número da ação).
@@ -2607,7 +2657,8 @@ async function gravarImportacaoWecheckPA(prontos) {
 
       ok++;
     } catch (err) {
-      erros.push({ chave, erro: err.message });
+      const gNome = ((estrutura.gerencias || []).find(x => x.id === grupo.gerId) || {}).nome || grupo.gerId;
+      erros.push({ gerencia: gNome, mes: grupo.mes, erro: err.message || String(err) });
     }
   }
   return { ok, erros };
