@@ -1353,7 +1353,10 @@ function montarMes(l) {
 // A planilha exporta a Unidade por extenso; o sistema usa sigla. Traduz antes de comparar.
 const SINONIMOS_UNIDADE = {
   'JABOTICABAL': 'JB',
-  'PEREIRA BARRETO': 'PB'
+  'PEREIRA BARRETO': 'PB',
+  // Códigos usados na base de multas (Santa Adélia JB / PB)
+  'SAJB': 'JB',
+  'SAPB': 'PB'
 };
 
 // Áreas que não têm gerência própria na planilha (reportam direto à diretoria/superintendência)
@@ -4684,14 +4687,18 @@ async function importarBaseMultasIP(evento) {
       const gerNome = ALIASES_GERENCIA[normaliza(gerNomeOriginal)] || gerNomeOriginal;
       const base = normaliza(baseNomeGerencia(gerNome));
       const sufixo = (gerNomeOriginal.match(/-\s*(JB|PB)\s*$/i) || [])[1];
-      const unidadeId = acharUnidadeId(sufixo || unidadeNome);
+      // Unidade: sufixo do nome da gerência, ou a coluna Unidade (SAJB/SAPB/JB/PB/Jaboticabal/Pereira Barreto)
+      const siglaUn = sufixo || (normaliza(unidadeNome).match(/(JB|PB)$/) || [])[1] || unidadeNome;
+      const unidadeId = acharUnidadeId(siglaUn);
       if (unidadeId) {
         const a = (gers || []).filter(g => normaliza(baseNomeGerencia(g.nome)) === base && g.unidade_id === unidadeId);
         if (a.length === 1) return { id: a[0].id };
       }
       const b = (gers || []).filter(g => normaliza(baseNomeGerencia(g.nome)) === base);
       if (b.length === 1) return { id: b[0].id };
-      if (b.length > 1) return { erro: 'gerência ambígua (não deu para saber se é JB ou PB)' };
+      if (b.length > 1) return { erro: unidadeId
+        ? 'gerência ambígua: há ' + b.length + ' cadastros com esse nome e nenhum na unidade ' + siglaUn
+        : 'gerência ambígua: a unidade "' + (unidadeNome || '-') + '" não foi reconhecida (JB ou PB)' };
       return { erro: 'gerência não encontrada no cadastro' };
     };
 
