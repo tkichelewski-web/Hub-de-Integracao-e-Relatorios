@@ -549,16 +549,16 @@ const IMPORTACOES = {
             dica: 'GERENCIA, UNIDADE, MES/ANO-SAFRA, FREQUENCIA, META, REALIZADO (+ SEMANA)' },
   pa:     { grupo: 'wecheck', titulo: 'Plano de Ação',       input: 'input-importar-planilha-pa',    fn: 'importarPlanilhaWecheckPlanoAcao',
             dica: 'GERENCIA, UNIDADE2/UNIDADE, MES, ANO/SAFRA, Tipo de Plano de Ação' },
-  sim:    { grupo: 'wecheck', titulo: 'Simulados',           input: 'input-importar-planilha-sim',   fn: 'importarPlanilhaWecheckSimulados',
-            dica: 'Unidade, Diretoria, MÊS, ANO/SAFRA, PLANEJADO, REALIZADO' },
+  simcrono: { grupo: 'outras', titulo: 'Simulados — Cronograma', acao: 'abrirApuracaoSimulados', botao: 'Apurar do cronograma',
+            dica: 'Lê o Cronograma de Simulados (sem planilha). Por gerência × mês: previsto = simulados planejados que contemplam a gerência; realizado = baixados dentro do mês' },
+  crono:  { grupo: 'outras',  titulo: 'Coaching Liderança — Cronograma', acao: 'abrirApuracaoCronograma', botao: 'Apurar do cronograma',
+            dica: 'Lê o Cronograma de Coaching (sem planilha). Fechamento do semestre (set/mar) = realizado × previsto; demais meses = 0 de 0' },
   ma:     { grupo: 'outras',  titulo: 'Meio Ambiente — Indicadores', acao: 'abrirApuracaoMA', botao: 'Apurar indicadores',
             dica: 'Lê as vistorias do time de Meio Ambiente (sem planilha). Por gerência × indicador × mês: previsto = itens avaliados; realizado = conformes. Mês sem vistoria = 0 de 0' },
   rl:     { grupo: 'outras',  titulo: 'Requisito Legal — Ius Natura', acao: 'abrirApuracaoRL', botao: 'Apurar indicadores',
             dica: 'Lê as importações da planilha do Ius Natura (tela Requisitos Legais). Atendidos = atendidos × requisitos aplicáveis; Não avaliados = avaliados × total. Mês sem importação = 0 de 0' },
   cr:     { grupo: 'outras',  titulo: 'Comitês — Reuniões', acao: 'abrirApuracaoCR', botao: 'Apurar reuniões',
             dica: 'Lê o cronograma da tela Comitês. Mês planejado = 1 previsto; realizado se a reunião foi feita até o fim do mês. Mês sem reunião = 0 de 0' },
-  coach:  { grupo: 'outras',  titulo: 'Coaching Liderança (planilha antiga)',  input: 'input-importar-planilha-coach', fn: 'importarPlanilhaCoachingLideranca',
-            dica: 'Matricula, Colaborador, Gerência, Observação Realizada, Inspeção Realizada (o mês é escolhido na prévia)' },
   exames: { grupo: 'outras',  titulo: 'Exames Periódicos',   input: 'input-importar-periodico',      fn: 'importarPlanilhaExamesPeriodicos',
             dica: 'GERENCIA, Mes Nome, Safra, Total Previsto Inicial, Total Realizado' },
   trein:  { grupo: 'outras',  titulo: 'Matriz de Treinamento', input: 'input-importar-treinamento',  fn: 'importarPlanilhaTreinamento',
@@ -4348,6 +4348,254 @@ async function gravarApuracaoCR() {
 }
 
 
+
+// ===== Apuração do Cronograma de Simulados -> indicador "Nº de Simulados" =====
+// Fonte: tabelas cronograma_simulados + simulado_gerencias (alimentadas pela tela dos técnicos).
+// Regra, por gerência × mês planejado:
+//   previsto  = simulados daquele mês que contemplam a gerência (inclui cancelados e sem baixa)
+//   realizado = desses, os com status Realizado e data_realizada até o último dia do mês
+// Gerência configurada sem simulado no mês = 0 de 0 (100 pontos), gravado só se já existe lançamento.
+
+function fimDoMesSim(ym) {
+  const [a, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
+}
+
+function abrirApuracaoSimulados() {
+  _importAtual = 'simcrono';
+  const overlay = document.createElement('div');
+  overlay.id = 'overlay-sim';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:10px;max-width:1040px;width:94%;max-height:88vh;overflow:auto;padding:24px;">
+      <h3 style="margin:0 0 4px;color:#07583C">Simulados — apurar do Cronograma</h3>
+      <p style="color:#666;font-size:13px;margin:0 0 14px;line-height:1.5">
+        Lê o Cronograma de Simulados e grava o indicador <b>${NOME_IND_SIMULADOS_CRONOGRAMA}</b> por gerência e mês.
+        Previsto = simulados planejados no mês que contemplam a gerência. Realizado = os que tiveram baixa com data dentro do mês.
+        Nada é salvo antes de você confirmar.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+        <div>
+          <label style="display:block;font-size:12px;color:#666;margin-bottom:4px">Safra</label>
+          <select id="sim-safra" style="padding:8px;border-radius:6px;border:1px solid #ccc;min-width:160px">
+            ${safrasData.map(s => `<option value="${s.id}">${s.nome}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn btn-sec" onclick="carregarPreviaSimulados()">Carregar prévia</button>
+      </div>
+      <div id="sim-previa" style="font-size:13px;color:#666">Escolha a safra e clique em "Carregar prévia".</div>
+      <div style="text-align:right;margin-top:16px">
+        <button onclick="document.getElementById('overlay-sim').remove()" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;margin-right:8px">Cancelar</button>
+        <button id="sim-btn-gravar" disabled style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer;opacity:.5">Confirmar e Gravar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+let _planoSim = null;
+
+async function carregarPreviaSimulados() {
+  const safraId = parseInt(document.getElementById('sim-safra').value, 10);
+  const safra = safrasData.find(s => s.id === safraId);
+  const box = document.getElementById('sim-previa');
+  const btnG = document.getElementById('sim-btn-gravar');
+  btnG.disabled = true; btnG.style.opacity = .5;
+  if (!safra) { box.innerHTML = 'Safra não encontrada.'; return; }
+  box.innerHTML = '<span class="spinner"></span> Lendo o cronograma...';
+
+  try {
+    const ind = indicadores.find(i => normaliza(i.nome) === normaliza(NOME_IND_SIMULADOS_CRONOGRAMA));
+    if (!ind) { box.innerHTML = `<span style="color:#d93025">Não encontrei o indicador "${NOME_IND_SIMULADOS_CRONOGRAMA}" cadastrado (ativo).</span>`; return; }
+
+    const meses = getMesesSafra(safra).map(m => m.val);
+    const hojeMes = new Date().toISOString().substring(0, 7);
+
+    const { data: sims, error: eS } = await sbSafe(() => sb.from('cronograma_simulados')
+      .select('id, unidade_id, mes_planejado, cenario, status, data_realizada, simulado_gerencias(gerencia_id)')
+      .eq('safra_id', safraId));
+    if (eS) throw new Error('cronograma_simulados: ' + eS.message);
+
+    let { data: cfg, error: eCfg } = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id')
+      .eq('safra_id', safraId).eq('ativo', true).eq('indicador_id', ind.id));
+    if (eCfg) throw new Error('ind_gerencia_safra: ' + eCfg.message);
+    if (!cfg || !cfg.length) {
+      const r2 = await sbSafe(() => sb.from('ind_gerencia_safra').select('gerencia_id').eq('ativo', true).eq('indicador_id', ind.id));
+      cfg = r2.data || [];
+    }
+    const gersComInd = new Set((cfg || []).map(c => c.gerencia_id));
+
+    // Contagem gerência × mês
+    const cont = {};           // gerId -> { ym: [previsto, realizado] }
+    const semConfig = new Set();
+    let semGerencia = 0;
+    (sims || []).forEach(s => {
+      const gids = (s.simulado_gerencias || []).map(x => x.gerencia_id);
+      if (!gids.length) { semGerencia++; return; }
+      const conta = s.status === 'Realizado' && s.data_realizada && s.data_realizada <= fimDoMesSim(s.mes_planejado);
+      gids.forEach(gid => {
+        if (!gersComInd.has(gid)) { semConfig.add(gid); return; }
+        const g = cont[gid] = cont[gid] || {};
+        const par = g[s.mes_planejado] = g[s.mes_planejado] || [0, 0];
+        par[0]++; if (conta) par[1]++;
+      });
+    });
+    gersComInd.forEach(id => { if (!cont[id]) cont[id] = {}; });
+    const gerIds = Object.keys(cont).map(Number).filter(id => estrutura.gerencias.some(g => g.id === id));
+
+    const { data: lancs, error: eL } = await sbSafe(() => sb.from('lancamentos').select('id, gerencia_id, mes')
+      .eq('safra_id', safraId).in('mes', meses).in('gerencia_id', gerIds.length ? gerIds : [-1]));
+    if (eL) throw new Error('lancamentos: ' + eL.message);
+    const lancPor = {};
+    (lancs || []).forEach(l => { lancPor[l.gerencia_id + '|' + l.mes] = l.id; });
+
+    const idsL = (lancs || []).map(l => l.id);
+    const itensAtuais = {};
+    for (let i = 0; i < idsL.length; i += 200) {
+      const lote = idsL.slice(i, i + 200);
+      const { data: its } = await sbSafe(() => sb.from('lancamento_itens').select('lancamento_id, previsto, realizado')
+        .in('lancamento_id', lote).eq('indicador_id', ind.id));
+      (its || []).forEach(it => { itensAtuais[it.lancamento_id] = it; });
+    }
+
+    _planoSim = { safraId, meses, hojeMes, cont, gerIds, lancPor, itensAtuais, indId: ind.id };
+
+    const nomeMes = m => ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.substring(5, 7)) - 1] + '/' + m.substring(2, 4);
+    const temSim = m => gerIds.some(id => cont[id][m]);
+    const chk = meses.map(m => {
+      const futuro = m > hojeMes;
+      return `<label style="display:inline-flex;align-items:center;gap:5px;margin:0 12px 6px 0;font-size:12px;${futuro ? 'color:#aaa' : ''}">
+        <input type="checkbox" class="sim-mes" value="${m}" ${futuro ? 'disabled' : (temSim(m) || m === hojeMes ? 'checked' : '')} onchange="renderTabelaSim()">
+        ${nomeMes(m)}${futuro ? ' — futuro' : ''}</label>`;
+    }).join('');
+
+    const nomeGer = id => { const g = estrutura.gerencias.find(x => x.id === id); return g ? `${g.nome} (${g.unidades?.nome || ''})` : 'Gerência ' + id; };
+    const avisos = [];
+    if (semConfig.size) avisos.push(`⚠️ ${semConfig.size} gerência(s) aparecem em simulados mas não têm o indicador configurado na safra (ind_gerencia_safra): ${[...semConfig].map(nomeGer).join(', ')}. Elas não serão gravadas.`);
+    if (semGerencia) avisos.push(`⚠️ ${semGerencia} simulado(s) sem nenhuma gerência marcada. Não contam para ninguém; corrija na tela dos técnicos.`);
+
+    box.innerHTML = `
+      <div style="margin-bottom:10px;color:#333"><b>Meses que serão gravados:</b><br>${chk}</div>
+      <div id="sim-resumo" style="margin-bottom:10px;color:#07583C;font-weight:600"></div>
+      ${avisos.map(a => `<div style="background:#fff4e5;border:1px solid #ffd59e;border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:12px;color:#8a5a00">${a}</div>`).join('')}
+      <div style="font-size:12px;color:#666;margin-bottom:6px">Cada célula: <b>realizado de previsto</b>. Embaixo, em cinza, o que está gravado hoje no IP. "—" = gerência sem simulado no mês.</div>
+      <div id="sim-tabela" style="overflow-x:auto"></div>`;
+    renderTabelaSim();
+    btnG.onclick = gravarApuracaoSimulados;
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<span style="color:#d93025">Erro: ${err.message}</span><br><span style="font-size:12px">Se o erro citar "cronograma_simulados", rode antes o SQL de criação das tabelas.</span>`;
+  }
+}
+
+function operacoesSim() {
+  const p = _planoSim;
+  if (!p) return [];
+  const mesesSel = [...document.querySelectorAll('.sim-mes:checked')].map(c => c.value);
+  const ops = [];
+  p.gerIds.forEach(gid => mesesSel.forEach(m => {
+    const par = p.cont[gid][m] || [0, 0];
+    const lancId = p.lancPor[gid + '|' + m] || null;
+    if (!par[0] && !lancId) return; // não cria lançamento só para gravar 0 de 0
+    ops.push({ gerId: gid, mes: m, lancId, previsto: par[0], realizado: par[1] });
+  }));
+  return ops;
+}
+
+function renderTabelaSim() {
+  const p = _planoSim;
+  if (!p) return;
+  const mesesSel = [...document.querySelectorAll('.sim-mes:checked')].map(c => c.value);
+  const nomeMes = m => ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.substring(5, 7)) - 1] + '/' + m.substring(2, 4);
+  const nomeGer = id => { const g = estrutura.gerencias.find(x => x.id === id); return g ? `${g.nome} <span style="color:#999">(${g.unidades?.nome || ''})</span>` : 'Gerência ' + id; };
+  const td = 'padding:6px 8px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap';
+  const linhas = [...p.gerIds].sort((a, b) => nomeGer(a).localeCompare(nomeGer(b))).map(id => {
+    const cels = mesesSel.map(m => {
+      const par = p.cont[id][m];
+      const lid = p.lancPor[id + '|' + m];
+      const it = lid && p.itensAtuais[lid];
+      const atual = it ? `<br><span style="font-size:11px;color:#999">atual: ${it.realizado ?? 0} de ${it.previsto ?? 0}</span>` : '';
+      if (!par) return `<td style="${td};color:#bbb">${lid ? '0 de 0' : '—'}${atual}</td>`;
+      const cor = par[1] >= par[0] ? '#07583C' : '#B42318';
+      return `<td style="${td}"><b style="color:${cor}">${par[1]} de ${par[0]}</b>${atual}</td>`;
+    }).join('');
+    return `<tr><td style="padding:6px 8px;border-bottom:1px solid #eee">${nomeGer(id)}</td>${cels}</tr>`;
+  }).join('');
+  document.getElementById('sim-tabela').innerHTML = mesesSel.length ? `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#f5f5f5"><th style="padding:6px 8px;text-align:left">Gerência</th>${mesesSel.map(m => `<th style="padding:6px 8px">${nomeMes(m)}</th>`).join('')}</tr></thead>
+      <tbody>${linhas || `<tr><td colspan="${mesesSel.length + 1}" style="padding:10px;color:#999">Nenhuma gerência com o indicador configurado.</td></tr>`}</tbody>
+    </table>` : '<span style="color:#999">Marque pelo menos um mês.</span>';
+
+  const ops = operacoesSim();
+  const el = document.getElementById('sim-resumo');
+  const btnG = document.getElementById('sim-btn-gravar');
+  const nZero = ops.filter(o => !o.previsto).length;
+  el.textContent = ops.length ? `${ops.length} lançamento(s) serão gravados: ${ops.length - nZero} com simulado e ${nZero} com 0 de 0.` : 'Nenhum lançamento a gravar com os meses marcados.';
+  btnG.disabled = !ops.length; btnG.style.opacity = ops.length ? 1 : .5;
+}
+
+async function gravarApuracaoSimulados() {
+  const p = _planoSim;
+  const ops = operacoesSim();
+  if (!p || !ops.length) return;
+  if (!confirm(`Gravar ${ops.length} lançamento(s) de "${NOME_IND_SIMULADOS_CRONOGRAMA}" no IP?\n\nO item desse indicador nesses meses será substituído e o IP das gerências recalculado.`)) return;
+
+  const btn = document.getElementById('sim-btn-gravar');
+  btn.disabled = true;
+  let ok = 0; const erros = [];
+  const hoje = new Date().toLocaleDateString('pt-BR');
+
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    btn.textContent = `Gravando ${i + 1}/${ops.length}...`;
+    try {
+      let lancId = o.lancId;
+      if (!lancId) {
+        const { data: ex } = await sb.from('lancamentos').select('id')
+          .eq('gerencia_id', o.gerId).eq('safra_id', p.safraId).eq('mes', o.mes).limit(1);
+        lancId = ex?.[0]?.id || null;
+        if (!lancId) {
+          const { data: ins, error: eIns } = await sb.from('lancamentos').insert({
+            gerencia_id: o.gerId, safra_id: p.safraId, mes: o.mes, periodo: o.mes, atualizado_em: new Date().toISOString()
+          }).select('id');
+          if (eIns) throw eIns;
+          lancId = ins?.[0]?.id;
+        }
+      }
+
+      const comentario = o.previsto ? `Apurado do Cronograma de Simulados em ${hoje}` : 'Sem simulado planejado para a gerência no mês (0 de 0)';
+      const { error: eDel } = await sb.from('lancamento_itens').delete().eq('lancamento_id', lancId).eq('indicador_id', p.indId);
+      if (eDel) throw eDel;
+      const { error: eItens } = await sb.from('lancamento_itens').insert([
+        { lancamento_id: lancId, indicador_id: p.indId, previsto: o.previsto, realizado: o.realizado, comentario }
+      ]);
+      if (eItens) throw eItens;
+
+      const { data: todosItens } = await sb.from('lancamento_itens').select('*').eq('lancamento_id', lancId);
+      const indsGer = await getIndsGerencia(o.gerId, p.safraId);
+      const pg = calcPontGer(todosItens || [], indsGer || []);
+      const { aud, mediaDir } = await recalcularAuditoriaEMediaDiretoria(o.gerId, o.mes, p.safraId, pg);
+      const { data: lancAtual } = await sb.from('lancamentos').select('ajuste_pontos').eq('id', lancId).limit(1);
+      const aj = lancAtual?.[0]?.ajuste_pontos || 0;
+
+      await sb.from('lancamentos').update({
+        pontuacao_gerencia: pg, media_diretoria: mediaDir, nota_auditoria: aud,
+        indice_base: calcIndice(pg, mediaDir, aud, 0), indice_prevencao: calcIndice(pg, mediaDir, aud, aj),
+        atualizado_em: new Date().toISOString()
+      }).eq('id', lancId);
+      ok++;
+    } catch (err) {
+      const g = estrutura.gerencias.find(x => x.id === o.gerId);
+      erros.push({ gerencia: g?.nome || o.gerId, mes: o.mes, erro: err.message });
+    }
+  }
+
+  document.getElementById('overlay-sim')?.remove();
+  if (erros.length) console.error('Erros na apuração de simulados:', erros);
+  alert(`Apuração concluída.\n${ok} lançamento(s) gravado(s).` + (erros.length ? `\n${erros.length} com erro (veja o console).` : ''));
+  if (ok) onPeriodoLancarChange();
+  else registrarLog('erro', 'Simulados — Cronograma', 'nenhum lançamento gravado');
+}
 
 // ===== Importação de Fechamento Mensal Completo (pacote com todos os indicadores) =====
 // Formato esperado: 1 arquivo .xlsx com 3 abas — "Indicadores" (uma linha por
