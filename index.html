@@ -216,6 +216,7 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
 <input type="file" id="input-importar-fechamento"     accept=".xlsx,.xls"      hidden onchange="executarImportacao('fech', event)">
 <input type="file" id="input-importar-periodico"      accept=".xlsx,.xls,.csv" multiple hidden onchange="executarImportacao('exames', event)">
 <input type="file" id="input-importar-treinamento"    accept=".xlsx,.xls,.csv" multiple hidden onchange="executarImportacao('trein', event)">
+<input type="file" id="input-importar-multas"         accept=".xlsx,.xls" hidden onchange="executarImportacao('multas', event)">
 
 <script>
 // ═════════════════════════════════════════════════════════════════
@@ -561,6 +562,8 @@ const IMPORTACOES = {
             dica: 'Lê o cronograma da tela Comitês. Mês planejado = 1 previsto; realizado se a reunião foi feita até o fim do mês. Mês sem reunião = 0 de 0' },
   exames: { grupo: 'outras',  titulo: 'Exames Periódicos',   input: 'input-importar-periodico',      fn: 'importarPlanilhaExamesPeriodicos',
             dica: 'GERENCIA, Mes Nome, Safra, Total Previsto Inicial, Total Realizado' },
+  multas: { grupo: 'outras',  titulo: 'Multas de Trânsito', input: 'input-importar-multas', fn: 'importarBaseMultasIP',
+            dica: 'Base_Multas_IP.xlsx do Tratamento de Multas (Gerência, Unidade, Mês, IP). Previsto = 0; realizado = multas com IP = SIM. Sem multa = 0 de 0' },
   trein:  { grupo: 'outras',  titulo: 'Matriz de Treinamento', input: 'input-importar-treinamento',  fn: 'importarPlanilhaTreinamento',
             dica: 'UNIDADE, GERÊNCIA, MÊS, SAFRA, PREVISTO, REALIZADO' },
 };
@@ -4595,6 +4598,161 @@ async function gravarApuracaoSimulados() {
   alert(`Apuração concluída.\n${ok} lançamento(s) gravado(s).` + (erros.length ? `\n${erros.length} com erro (veja o console).` : ''));
   if (ok) onPeriodoLancarChange();
   else registrarLog('erro', 'Simulados — Cronograma', 'nenhum lançamento gravado');
+}
+
+// ===== Importação da Base Multas IP -> "100% Dos condutores sem infrações" =====
+// Arquivo: Base_Multas_IP.xlsx gerado na ferramenta "Tratamento de Multas IP".
+// Por gerência × mês: previsto = 0 (sempre); realizado = nº de multas com IP = SIM.
+// 0 multas = 0 de 0 (100 pontos); qualquer multa = 0 pontos no mês.
+// Gerências configuradas com o indicador e sem multa no mês entram com 0 de 0.
+const NOME_IND_MULTAS = '100% Dos condutores sem infrações';
+
+function mesDaCelulaMultas(v) {
+  if (v instanceof Date && !isNaN(v)) return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0');
+  if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400000)); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); }
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return m[3] + '-' + m[2].padStart(2, '0');
+    m = s.match(/^(\d{4})-(\d{2})/); if (m) return m[1] + '-' + m[2];
+    const abrev = { jan: '01', fev: '02', mar: '03', abr: '04', mai: '05', jun: '06', jul: '07', ago: '08', set: '09', out: '10', nov: '11', dez: '12' };
+    m = s.match(/^([a-zç]{3})[a-zç]*\.?\s*(?:\/|de)?\s*(\d{2,4})$/);
+    if (m && abrev[m[1]]) return (m[2].length === 2 ? '20' + m[2] : m[2]) + '-' + abrev[m[1]];
+  }
+  return null;
+}
+function safraDoMesMultas(ym) {
+  const [a, m] = ym.split('-').map(Number);
+  return m >= 4 ? a + '/' + (a + 1) : (a - 1) + '/' + a;
+}
+
+async function importarBaseMultasIP(evento) {
+  const arquivos = Array.from(evento.target.files || []);
+  if (!arquivos.length) return;
+  try {
+    const linhas = [];
+    for (const arquivo of arquivos) {
+      const wb = XLSX.read(new Uint8Array(await arquivo.arrayBuffer()), { type: 'array', cellDates: true });
+      const aba = wb.SheetNames.find(n => normaliza(n) === 'BASE MULTAS') || wb.SheetNames[0];
+      linhas.push(...XLSX.utils.sheet_to_json(wb.Sheets[aba], { defval: null }));
+    }
+
+    // Conta as multas com IP = SIM por gerência × unidade × mês
+    const grupos = {}, mesesBase = new Set();
+    let semMes = 0, totalSim = 0;
+    linhas.forEach(lBruta => {
+      const l = linhaComChavesTrimadas(lBruta);
+      if (normaliza(campo(l, ['IP'])) !== 'SIM') return;
+      totalSim++;
+      const mes = mesDaCelulaMultas(campo(l, ['Mês', 'MES', 'Mes']));
+      if (!mes) { semMes++; return; }
+      mesesBase.add(mes);
+      const gerNome = (campo(l, ['Gerência', 'GERENCIA']) || '').toString().trim();
+      const unidadeNome = (campo(l, ['Unidade', 'UNIDADE']) || '').toString().trim();
+      const k = gerNome + '|' + unidadeNome + '|' + mes;
+      if (!grupos[k]) grupos[k] = { gerNome, unidadeNome, mes, realizado: 0, pessoas: [] };
+      grupos[k].realizado++;
+      grupos[k].pessoas.push({ nome: (campo(l, ['Nome']) || '').toString(), cargo: '', matricula: (campo(l, ['AIT']) || '').toString(), status: (campo(l, ['Tipo de Infração']) || '').toString() });
+    });
+    if (!linhas.length || campo(linhaComChavesTrimadas(linhas[0]), ['IP']) === undefined) {
+      alert('Não reconheci a planilha. Use o arquivo Base_Multas_IP.xlsx gerado no "Tratamento de Multas IP" (colunas Gerência, Mês, IP, Unidade).');
+      return;
+    }
+
+    const [{ data: gers }, { data: unids }, { data: inds }, { data: safrasBanco }] = await Promise.all([
+      sb.from('gerencias').select('id,nome,unidade_id').eq('ativo', true),
+      sb.from('unidades').select('id,nome'),
+      sb.from('indicadores').select('id,nome,tipo,peso').eq('ativo', true),
+      sb.from('safras').select('id,nome,ano_ini,ano_fim')
+    ]);
+    const ind = (inds || []).find(i => normaliza(i.nome) === normaliza(NOME_IND_MULTAS));
+    if (!ind) { alert('Não encontrei o indicador "' + NOME_IND_MULTAS + '" cadastrado (ativo).'); return; }
+
+    // Meses que podem ser gravados: de safras cadastradas e até o mês atual
+    const hojeMes = new Date().toISOString().slice(0, 7);
+    const safraIdDoMes = ym => { const [ini, fim] = safraDoMesMultas(ym).split('/').map(Number); return ((safrasBanco || []).find(s => s.ano_ini === ini && s.ano_fim === fim) || {}).id || null; };
+    const candidatos = [...mesesBase].filter(m => m <= hojeMes && safraIdDoMes(m)).sort();
+    if (!candidatos.length) { alert('A base não tem multas (IP = SIM) em meses de safras cadastradas.'); return; }
+    const meses = await escolherMesesMultas(candidatos);
+    if (!meses || !meses.length) return;
+
+    const acharUnidadeId = nomeExport => {
+      const alvo = SINONIMOS_UNIDADE[normaliza(nomeExport)] || nomeExport;
+      const u = (unids || []).find(u => normaliza(u.nome) === normaliza(alvo));
+      return u ? u.id : null;
+    };
+    const acharGerId = (gerNomeOriginal, unidadeNome) => {
+      const gerNome = ALIASES_GERENCIA[normaliza(gerNomeOriginal)] || gerNomeOriginal;
+      const base = normaliza(baseNomeGerencia(gerNome));
+      const sufixo = (gerNomeOriginal.match(/-\s*(JB|PB)\s*$/i) || [])[1];
+      const unidadeId = acharUnidadeId(sufixo || unidadeNome);
+      if (unidadeId) {
+        const a = (gers || []).filter(g => normaliza(baseNomeGerencia(g.nome)) === base && g.unidade_id === unidadeId);
+        if (a.length === 1) return { id: a[0].id };
+      }
+      const b = (gers || []).filter(g => normaliza(baseNomeGerencia(g.nome)) === base);
+      if (b.length === 1) return { id: b[0].id };
+      if (b.length > 1) return { erro: 'gerência ambígua (não deu para saber se é JB ou PB)' };
+      return { erro: 'gerência não encontrada no cadastro' };
+    };
+
+    const prontos = {}, semMatch = [];
+    Object.values(grupos).filter(g => meses.includes(g.mes)).forEach(g => {
+      const r = acharGerId(g.gerNome, g.unidadeNome);
+      if (r.erro) { semMatch.push({ ...g, erro: r.erro }); return; }
+      const k = r.id + '|' + g.mes;
+      if (!prontos[k]) prontos[k] = { gerId: r.id, gerNome: (gers.find(x => x.id === r.id) || {}).nome || g.gerNome, mes: g.mes,
+        safraTxt: safraDoMesMultas(g.mes), nomeIndicador: NOME_IND_MULTAS, indicadorId: ind.id, peso: ind.peso, previsto: 0, realizado: 0, pessoas: [] };
+      prontos[k].realizado += g.realizado; prontos[k].pessoas.push(...g.pessoas);
+    });
+
+    // Gerências com o indicador e sem multa no mês: 0 de 0
+    for (const m of meses) {
+      const safraId = safraIdDoMes(m);
+      let { data: cfg } = await sb.from('ind_gerencia_safra').select('gerencia_id').eq('safra_id', safraId).eq('ativo', true).eq('indicador_id', ind.id);
+      if (!cfg || !cfg.length) ({ data: cfg } = await sb.from('ind_gerencia_safra').select('gerencia_id').eq('ativo', true).eq('indicador_id', ind.id));
+      [...new Set((cfg || []).map(c => c.gerencia_id))].forEach(gid => {
+        const g = (gers || []).find(x => x.id === gid); if (!g) return;
+        const k = gid + '|' + m;
+        if (!prontos[k]) prontos[k] = { gerId: gid, gerNome: g.nome, mes: m, safraTxt: safraDoMesMultas(m), nomeIndicador: NOME_IND_MULTAS, indicadorId: ind.id, peso: ind.peso, previsto: 0, realizado: 0, pessoas: [] };
+      });
+    }
+
+    if (semMatch.length) {
+      const nMultas = semMatch.reduce((s, x) => s + x.realizado, 0);
+      const detalhe = semMatch.slice(0, 12).map(s => `- ${s.gerNome || '(sem gerência)'} ${s.unidadeNome ? '(' + s.unidadeNome + ')' : ''} ${s.mes}: ${s.realizado} multa(s) — ${s.erro}`).join('\n');
+      if (!confirm(`${nMultas} multa(s) com IP = SIM estão em gerências que não encontrei no cadastro do IP:\n\n${detalhe}${semMatch.length > 12 ? '\n... e mais ' + (semMatch.length - 12) : ''}\n\nEssas multas NÃO serão gravadas. Corrija a gerência no ATIVOS ou na base e gere de novo, ou continue sem elas.\n\nContinuar?`)) return;
+    }
+    if (semMes) console.warn(semMes + ' multa(s) com IP = SIM sem mês foram ignoradas.');
+
+    const lista = Object.values(prontos).sort((a, b) => a.mes.localeCompare(b.mes) || b.realizado - a.realizado || a.gerNome.localeCompare(b.gerNome));
+    if (!lista.length) { alert('Nada para gravar nos meses escolhidos.'); return; }
+    const nomeResumo = arquivos.length === 1 ? arquivos[0].name : arquivos.length + ' arquivos';
+    await mostrarPreviaImportacaoV2(lista, nomeResumo + ' — ' + totalSim + ' multa(s) com IP = SIM na base');
+  } catch (err) {
+    console.error(err);
+    alert('Erro ao ler a base de multas: ' + err.message);
+  } finally {
+    if (evento.target) evento.target.value = '';
+  }
+}
+
+// Janela para escolher os meses que vão para o IP
+function escolherMesesMultas(meses) {
+  return new Promise(resolve => {
+    const nome = m => ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(m.slice(5, 7)) - 1] + '/' + m.slice(0, 4);
+    const ultimo = meses[meses.length - 1];
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:10px;max-width:520px;width:92%;padding:22px">
+      <h3 style="margin:0 0 4px;color:#07583C">Multas — meses para gravar no IP</h3>
+      <p style="color:#666;font-size:13px;margin:0 0 12px">A base tem multas nestes meses. Normalmente grava-se só o mês que fechou. Gerências sem multa no mês entram como 0 de 0.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:14px">${meses.map(m => `<label style="font-size:13px"><input type="checkbox" class="mul-mes" value="${m}" ${m === ultimo ? 'checked' : ''}> ${nome(m)}</label>`).join('')}</div>
+      <div style="text-align:right"><button id="mul-cancel" style="padding:8px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;margin-right:8px">Cancelar</button>
+      <button id="mul-ok" style="padding:8px 16px;border-radius:6px;border:none;background:#07583C;color:#fff;cursor:pointer">Ver prévia</button></div></div>`;
+    document.body.appendChild(ov);
+    ov.querySelector('#mul-cancel').onclick = () => { ov.remove(); resolve(null); };
+    ov.querySelector('#mul-ok').onclick = () => { const sel = [...ov.querySelectorAll('.mul-mes:checked')].map(c => c.value); ov.remove(); resolve(sel); };
+  });
 }
 
 // ===== Importação de Fechamento Mensal Completo (pacote com todos os indicadores) =====
