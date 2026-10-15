@@ -563,7 +563,7 @@ const IMPORTACOES = {
   exames: { grupo: 'outras',  titulo: 'Exames Periódicos',   input: 'input-importar-periodico',      fn: 'importarPlanilhaExamesPeriodicos',
             dica: 'GERENCIA, Mes Nome, Safra, Total Previsto Inicial, Total Realizado' },
   emerg:  { grupo: 'outras',  titulo: 'Equipamentos de Emergência', acao: 'abrirApuracaoEM', botao: 'Apurar avaliações',
-            dica: 'Lê a tela Equipamentos de Emergência. Previsto = equipamentos vencendo no mês; realizado = operacionais ou com OM aberta. Nada vencendo = 0 de 0' },
+            dica: 'Lê a tela Equipamentos de Emergência. Previsto = equipamentos vencendo no mês; realizado = operacionais ou com OS aberta. Nada vencendo = 0 de 0' },
   acid:   { grupo: 'outras',  titulo: 'Investigação de Acidentes', acao: 'abrirApuracaoAC', botao: 'Apurar investigações',
             dica: 'Lê a tela Investigação de Acidentes (deflator = SIM). Comitê conforme a classificação e investigação no prazo (7 ou 15 dias). Sem ocorrência = 0 de 0' },
   multas: { grupo: 'outras',  titulo: 'Multas de Trânsito', input: 'input-importar-multas', fn: 'importarBaseMultasIP',
@@ -4862,7 +4862,7 @@ function escolherMesesMultas(meses) {
 
 // ===== Apuração dos Equipamentos de Emergência (tela própria) =====
 // Lê a visão emerg_ip: previsto = equipamentos com avaliação vencendo no mês;
-// realizado = avaliados que estavam operacionais ou com OM aberta. Nada vencendo = 0 de 0.
+// realizado = avaliados que estavam operacionais ou com OS aberta. Nada vencendo = 0 de 0.
 
 const IND_EM_NOMES = [
   '100% dos equipamentos de emergência operacionais ou com ordem de manutenção aberta'
@@ -4877,7 +4877,7 @@ function abrirApuracaoEM() {
     <div style="background:#fff;border-radius:10px;max-width:1120px;width:95%;max-height:88vh;overflow:auto;padding:24px;">
       <h3 style="margin:0 0 4px;color:#07583C">Equipamentos de Emergência — apurar</h3>
       <p style="color:#666;font-size:13px;margin:0 0 14px;line-height:1.5">
-        Lê as avaliações da tela Equipamentos de Emergência e grava o indicador por gerência e mês. Previsto = equipamentos com avaliação vencendo no mês; realizado = avaliados que estavam operacionais ou com OM aberta. Mês sem vencimento fica 0 de 0. Nada é salvo antes de você confirmar.
+        Lê as avaliações da tela Equipamentos de Emergência e grava o indicador por gerência e mês. Previsto = equipamentos com avaliação vencendo no mês; realizado = avaliados que estavam operacionais ou com OS aberta. Mês sem vencimento fica 0 de 0. Nada é salvo antes de você confirmar.
       </p>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
         <div>
