@@ -120,6 +120,27 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
 @keyframes gira{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spinner{animation:none}.progresso .barra div{transition:none}}
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.css">
+<script src="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.js.iife.js"></script>
+<style>
+/* Tour guiado */
+.driver-popover{border-radius:12px;padding:18px 20px;max-width:380px;font-family:inherit}
+.driver-popover-title{color:#07583C;font-size:17px;font-weight:700}
+.driver-popover-description{font-size:14px;line-height:1.5;color:#1C2B22}
+.driver-popover-footer button{border-radius:6px;padding:6px 12px;font-size:13px;text-shadow:none}
+.driver-popover-next-btn{background:#07583C!important;color:#fff!important;border-color:#07583C!important}
+.driver-popover-progress-text{color:#5D6F64}
+.tour-menu{position:relative}
+.tour-menu > button{background:#B3DD64;color:#07583C;border:none;border-radius:6px;padding:7px 14px;font-weight:700;cursor:pointer;font:inherit}
+.tour-opcoes{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;min-width:290px;z-index:50;display:none}
+.tour-opcoes.aberto{display:block}
+.tour-opcoes button{display:block;width:100%;text-align:left;background:none;border:none;padding:10px 12px;border-radius:6px;font:inherit;font-size:14px;color:#1C2B22;cursor:pointer}
+.tour-opcoes button:hover{background:#EAF5D6;color:#07583C}
+.tour-convite{position:fixed;right:20px;bottom:20px;background:#07583C;color:#fff;border-radius:12px;padding:14px 16px;max-width:330px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:60;font-size:14px}
+.tour-convite b{color:#B3DD64}
+.tour-convite div{display:flex;gap:8px;margin-top:10px}
+.tour-convite button{border:none;border-radius:6px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+</style>
 </head>
 <body>
 
@@ -130,6 +151,14 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
       <div>
         <h1>Hub de Integração e Relatórios</h1>
         <div class="sub">Índice de Prevenção – VIDAS</div>
+      </div>
+      <div class="tour-menu" style="margin-left:auto;margin-right:16px">
+        <button type="button" onclick="document.getElementById('tour-opcoes').classList.toggle('aberto')" aria-haspopup="true">❓ Tour guiado</button>
+        <div class="tour-opcoes" id="tour-opcoes" role="menu">
+          <button type="button" onclick="iniciarTour('importar')">1. Importar Observação e Inspeção</button>
+          <button type="button" onclick="iniciarTour('apurar')">2. Apurar as telas e outras fontes</button>
+          <button type="button" onclick="iniciarTour('apresentacao')">3. Gerar a apresentação por gerência</button>
+        </div>
       </div>
       <div class="usuario" id="status-conexao"></div>
     </div>
@@ -143,8 +172,8 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
         <p>Cada importação mostra uma prévia antes de gravar. Nada vai para o banco sem a sua confirmação.</p>
       </div>
       <div class="painel-corpo">
-        <div class="grupo-titulo">Exportações do WeCheck</div>
-        <p class="grupo-desc">Aceitam vários arquivos de uma vez (um por aba/tabela exportada).</p>
+        <div class="grupo-titulo">Relatórios dos dashboards</div>
+        <p class="grupo-desc">Arquivos exportados dos dashboards (Exportar dados → Dados com layout atual → .xlsx). Aceitam vários arquivos de uma vez.</p>
         <div id="lista-wecheck"></div>
 
         <div class="grupo-titulo">Outras fontes</div>
@@ -545,9 +574,9 @@ setInterval(renovarTokenProativo, 4 * 60 * 1000);
 // ═════════════════════════════════════════════════════════════════
 const IMPORTACOES = {
   insp:   { grupo: 'wecheck', titulo: 'Inspeção',            input: 'input-importar-planilha',       fn: 'importarPlanilhaWecheckInspecoes',
-            dica: 'GERENCIA, UNIDADE, Mês/Ano, Frequência Inspeção, META, REALIZADO (+ Quinzena/Semana)' },
+            dica: 'Relatório do dashboard de Inspeção (Exportar dados → layout atual → .xlsx): UNIDADE, GERENCIA, SAFRA, MÊS, FREQUÊNCIA, PREVISTO, REALIZADO' },
   obs:    { grupo: 'wecheck', titulo: 'Observação',          input: 'input-importar-planilha-obs',   fn: 'importarPlanilhaWecheckObservacoes',
-            dica: 'GERENCIA, UNIDADE, MES/ANO-SAFRA, FREQUENCIA, META, REALIZADO (+ SEMANA)' },
+            dica: 'Relatório do dashboard de Observação (Exportar dados → layout atual → .xlsx): UNIDADE, GERENCIA, SAFRA, MÊS, FREQUÊNCIA, PREVISTO, REALIZADO' },
   pa:     { grupo: 'wecheck', titulo: 'Plano de Ação',       input: 'input-importar-planilha-pa',    fn: 'importarPlanilhaWecheckPlanoAcao',
             dica: 'GERENCIA, UNIDADE2/UNIDADE, MES, ANO/SAFRA, Tipo de Plano de Ação' },
   simcrono: { grupo: 'outras', titulo: 'Simulados — Cronograma', acao: 'abrirApuracaoSimulados', botao: 'Apurar do cronograma',
@@ -6001,6 +6030,61 @@ async function importarPlanilhaTreinamento(evento) {
 }
 
 
+
+// ═════════════════════════════════════════════════════════════
+// TOUR GUIADO (Driver.js): mostra na tela, passo a passo, onde clicar
+// ═════════════════════════════════════════════════════════════
+const TOURS = {
+  importar: [
+    { popover: { title: 'Importar Observação e Inspeção', description: 'Traga para o IP os relatórios do dashboard sempre que for atualizar, normalmente toda semana.<br><br><b>No dashboard:</b> filtre a safra e o mês → passe o mouse na tabela → <b>⋯</b> → <b>Exportar dados</b> → <b>Dados com layout atual</b> → <b>.xlsx</b>. Faça isso no relatório de Observação e no de Inspeção.' } },
+    { element: '#lista-wecheck', popover: { title: 'Relatórios dos dashboards', description: 'Aqui ficam os botões dos relatórios exportados dos dashboards de Inspeção, Observação e Plano de Ação. Cada um aceita o arquivo como sai do dashboard, sem mexer nas colunas.', side: 'right' } },
+    { element: '#btn-obs', popover: { title: 'Passo 1 · Observação', description: 'Clique aqui e escolha o arquivo do <b>relatório de observações realizadas</b>.', side: 'left' } },
+    { popover: { title: 'Passo 2 · Conferir a prévia', description: 'Abre uma janela com gerência, mês e indicador, com previsto e realizado.<br><br>✔ Confira se o mês é o que você filtrou.<br>⚠ Leia os avisos em amarelo: gerência não encontrada fica fora do IP.<br><br>Depois clique em <b>Confirmar</b>.' } },
+    { element: '#btn-insp', popover: { title: 'Passo 3 · Inspeção', description: 'Repita com o arquivo do <b>relatório de inspeções</b>: escolher o arquivo, conferir a prévia e confirmar.', side: 'left' } },
+    { element: '#btn-pa', popover: { title: 'Plano de Ação', description: 'Mesmo caminho. Se a área mudou o prazo de ações, exporte um relatório que <b>inclua o mês a corrigir</b>: o Hub avisa o que vai virar 0 de 0.', side: 'left' } },
+    { element: '#log-lista', popover: { title: 'Atividade da sessão', description: 'Cada importação aparece aqui. Se der erro, aperte <b>F12 → Console</b>, abra as linhas vermelhas e mande o print ao administrador do IP.', side: 'top' } }
+  ],
+  apurar: [
+    { element: '#lista-outras', popover: { title: 'Outras fontes', description: 'Telas do portal e outras planilhas. Botões <b>Apurar</b> leem as telas sozinhos, sem arquivo.', side: 'right' } },
+    { element: '#btn-simcrono', popover: { title: 'Apurar uma tela', description: 'Exemplo: Simulados. Na janela que abre:<br>1. escolha a safra<br>2. <b>Carregar prévia</b><br>3. marque os meses<br>4. <b>Confirmar e Gravar</b>', side: 'left' } },
+    { element: '#btn-cr', popover: { title: 'As demais telas', description: 'Faça o mesmo em <b>Comitês</b>, <b>Equipamentos de Emergência</b>, <b>Investigação de Acidentes</b> e <b>Meio Ambiente</b>. O <b>Coaching</b> fecha em setembro e março.', side: 'left' } },
+    { element: '#btn-multas', popover: { title: 'Multas de Trânsito', description: 'Importe o <b>Base_Multas_IP.xlsx</b> gerado no Tratamento de Multas e marque o(s) mês(es) que quer atualizar.', side: 'left' } },
+    { element: '#btn-exames', popover: { title: 'Exames e Treinamento', description: 'Exames Periódicos e Matriz de Treinamento: escolha a planilha, confira a prévia e confirme.', side: 'left' } },
+    { popover: { title: 'Pronto', description: 'Com tudo importado e apurado, o IP fica atualizado. Agora dá para gerar a apresentação (tour 3).' } }
+  ],
+  apresentacao: [
+    { element: '#painel-ppt', popover: { title: 'Gerador de apresentação', description: 'Monta o PowerPoint com o IP de cada gerência, a partir do que está gravado no IP.', side: 'left' } },
+    { element: '#f-safra', popover: { title: 'Safra', description: 'A safra em andamento.', side: 'bottom' } },
+    { element: '#f-mes', popover: { title: 'Mês', description: 'O mês que vai aparecer na apresentação.', side: 'bottom' } },
+    { element: '#f-dir', popover: { title: 'Diretoria', description: 'Todas, ou uma só para filtrar a lista de gerências.', side: 'bottom' } },
+    { element: '#f-ger-lista', popover: { title: 'Gerências', description: 'Use <b>Marcar todas</b> para a reunião geral, ou <b>Nenhuma</b> e marque só as que quiser. A busca acha pelo nome.', side: 'top' } },
+    { element: () => document.querySelector('input[name="f-modo"]')?.closest('div') || document.getElementById('painel-ppt'), popover: { title: 'Um arquivo ou um por gerência', description: '<b>Um arquivo</b> para a reunião geral.<br><b>Um para cada gerência</b> para mandar a cada gerente. Se o navegador perguntar, permita downloads múltiplos.', side: 'top' } },
+    { element: '#f-ordem-ip', popover: { title: 'Ordenar pelo IP', description: 'Marcado: do maior para o menor IP dentro de cada diretoria.', side: 'top' } },
+    { element: '#btn-gerar', popover: { title: 'Gerar', description: 'Clique e aguarde a barra. O arquivo vai para a pasta Downloads.', side: 'top' } }
+  ]
+};
+function iniciarTour(nome) {
+  document.getElementById('tour-opcoes')?.classList.remove('aberto');
+  document.getElementById('tour-convite')?.remove();
+  if (!window.driver || !window.driver.js) { alert('O tour não carregou. Confira a internet e recarregue a página (Ctrl + F5).'); return; }
+  const passos = (TOURS[nome] || []).filter(p => !p.element || typeof p.element === 'function' || document.querySelector(p.element));
+  const d = window.driver.js.driver({
+    showProgress: true, allowClose: true, smoothScroll: true, overlayOpacity: 0.55, stagePadding: 6,
+    nextBtnText: 'Próximo →', prevBtnText: '← Voltar', doneBtnText: 'Concluir', progressText: '{{current}} de {{total}}',
+    steps: passos
+  });
+  d.drive();
+  try { localStorage.setItem('hub-tour-visto', '1'); } catch (_) {}
+}
+document.addEventListener('click', e => { const m = document.querySelector('.tour-menu'); if (m && !m.contains(e.target)) document.getElementById('tour-opcoes')?.classList.remove('aberto'); });
+// Convite na primeira visita
+window.addEventListener('load', () => {
+  let visto = false; try { visto = localStorage.getItem('hub-tour-visto') === '1'; } catch (_) {}
+  if (visto) return;
+  const c = document.createElement('div'); c.className = 'tour-convite'; c.id = 'tour-convite';
+  c.innerHTML = 'Primeira vez no Hub? <b>Faça o tour guiado</b> da importação de Observação e Inspeção.<div><button style="background:#B3DD64;color:#07583C;font-weight:700" onclick="iniciarTour(\'importar\')">Começar</button><button style="background:transparent;color:#fff;border:1px solid #2F7F60" onclick="try{localStorage.setItem(\'hub-tour-visto\',\'1\')}catch(_){};this.closest(\'.tour-convite\').remove()">Agora não</button></div>';
+  document.body.appendChild(c);
+});
 </script>
 </body>
 </html>
