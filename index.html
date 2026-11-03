@@ -207,6 +207,16 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
           </div>
           <div class="ger-lista" id="f-ger-lista"><p class="vazio">Selecione safra e mês.</p></div>
         </div>
+        <fieldset class="modo" id="bloco-setor">
+          <legend>Setores da Diretoria de Pessoas (RH/Jurídico/Restaurante/Saúde/Facilities)</legend>
+          <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Separa as <b>pendências</b> por setor. A nota continua a da gerência. Precisa do ATIVOS, que fica guardado neste computador.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <input type="file" id="f-ativos" accept=".xlsx,.xls,.csv" onchange="carregarAtivosSetor(this)" style="font-size:13px;max-width:260px">
+            <span id="ativos-info" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+          <label for="f-setor" style="font-size:13px;font-weight:600">Setor</label>
+          <select id="f-setor" style="width:100%" onchange="atualizarResumoSelecao()"><option value="">Todos juntos (como hoje)</option></select>
+        </fieldset>
         <fieldset class="modo">
           <legend>Formato do arquivo</legend>
           <label><input type="radio" name="f-modo" value="unico" checked onchange="atualizarResumoSelecao()"> Um arquivo com todas as gerências marcadas</label>
@@ -768,6 +778,66 @@ function marcarGer(valor) {
   atualizarResumoSelecao();
 }
 
+// ── Setores (supervisões do ATIVOS) da gerência RH/Jurídico/Restaurante/Saúde/Facilities ──
+const GER_COM_SETORES = 'RH/Jurídico/Restaurante/Saúde/Facilities';
+let _ativosSetor = null; // { data, porMat: {matricula: setor}, porNome: {nome: setor}, setores: [] }
+const rotSetor = s => String(s || '').replace(/^Supervis[aã]o\s+/i, '').trim() || 'Diretoria de Pessoas';
+const ehGerComSetores = nome => normaliza(nome) === normaliza(GER_COM_SETORES);
+function aplicarAtivosSetor(dados) {
+  _ativosSetor = dados;
+  const sel = document.getElementById('f-setor');
+  const atual = sel.value;
+  sel.innerHTML = '<option value="">Todos juntos (como hoje)</option>' +
+    (dados ? '<option value="__cada__">Um arquivo para cada setor</option>' + dados.setores.map(x => `<option value="${x}">${x}</option>`).join('') : '');
+  if ([...sel.options].some(o => o.value === atual)) sel.value = atual;
+  document.getElementById('ativos-info').textContent = dados ? `ATIVOS de ${dados.data} · ${dados.setores.length} setores` : 'Envie o ATIVOS para habilitar os setores.';
+}
+async function carregarAtivosSetor(input) {
+  const f = input.files[0]; if (!f) return;
+  try {
+    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+    const linhas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: null });
+    const porMat = {}, porNome = {}, setores = new Set();
+    linhas.forEach(l => {
+      const ger = String(campo(l, ['GERENCIA', 'GERÊNCIA']) || '');
+      if (normaliza(ALIASES_GERENCIA[normaliza(ger)] || ger) !== normaliza(GER_COM_SETORES)) return;
+      const setor = rotSetor(campo(l, ['SUPERVISAO', 'SUPERVISÃO']));
+      const mat = String(campo(l, ['MATRICULA', 'MATRÍCULA']) || '').replace(/\D/g, '');
+      if (mat) porMat[mat] = setor;
+      porNome[normaliza(campo(l, ['NOME']))] = setor;
+      setores.add(setor);
+    });
+    if (!setores.size) { alert('Não encontrei pessoas da Diretoria de Pessoas nesse arquivo. Confira se é o ATIVOS (colunas MATRICULA, NOME, GERENCIA, SUPERVISAO).'); return; }
+    const dados = { data: new Date().toLocaleDateString('pt-BR'), porMat, porNome, setores: [...setores].sort((a, b) => a.localeCompare(b, 'pt-BR')) };
+    try { localStorage.setItem('hub-ativos-setor', JSON.stringify(dados)); } catch (_) {}
+    aplicarAtivosSetor(dados);
+  } catch (e) { alert('Não consegui ler o ATIVOS: ' + e.message); }
+  finally { input.value = ''; }
+}
+function setorDaPessoa(p) {
+  if (!_ativosSetor) return null;
+  const m = String(p.matricula || '').replace(/\D/g, '');
+  return (m && _ativosSetor.porMat[m]) || _ativosSetor.porNome[normaliza(p.nome)] || null;
+}
+// Troca a gerência com setores por uma (ou várias) versões filtradas por setor
+function separarPorSetor(dados) {
+  const escolha = document.getElementById('f-setor')?.value || '';
+  if (!escolha || !_ativosSetor) return dados;
+  const saida = [];
+  dados.forEach(g => {
+    if (!ehGerComSetores(g.gerNome)) { saida.push(g); return; }
+    const setores = escolha === '__cada__' ? _ativosSetor.setores : [escolha];
+    setores.forEach(st => saida.push({
+      ...g,
+      gerNome: `${g.gerNome} — ${st}`,
+      setor: st,
+      pendencias: g.pendencias.filter(p => setorDaPessoa(p) === st)
+    }));
+  });
+  return saida;
+}
+try { const salvo = JSON.parse(localStorage.getItem('hub-ativos-setor') || 'null'); setTimeout(() => aplicarAtivosSetor(salvo), 0); } catch (_) {}
+
 function modoArquivo() {
   return document.querySelector('input[name="f-modo"]:checked')?.value || 'unico';
 }
@@ -1287,7 +1357,8 @@ async function gerarPowerPoint() {
   const textoBtn = btn.textContent;
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Gerando...';
   try {
-    const dados = await coletarDadosApresentacao(safraId, mes, dirId, gerIds);
+    let dados = await coletarDadosApresentacao(safraId, mes, dirId, gerIds);
+    dados = separarPorSetor(dados);
     if (!dados.length) {
       progresso(100, 'Nenhuma das gerências marcadas tem lançamento nesse mês.');
       return;
