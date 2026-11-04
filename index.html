@@ -2428,11 +2428,16 @@ const NOME_IND_PA_SIMULADOS  = 'Nº de Ações de Simulados';
 const NOME_IND_PA_ABRANGENCIA= 'Nº de Ações de Acidentes/Abrangência';
 const NOME_IND_PA_ACID_INC   = 'Nº de Ações de Acidentes/Incidentes';
 const NOME_IND_PA_ERGONOMIA  = 'Nº de Ações de Ergonomia';
+const NOME_IND_PA_COMITE     = 'Nº de Ações do Comitê de SSMA';
+const NOMES_IND_PA = [NOME_IND_PA_INSPECOES, NOME_IND_PA_SIMULADOS, NOME_IND_PA_ABRANGENCIA, NOME_IND_PA_ACID_INC, NOME_IND_PA_ERGONOMIA, NOME_IND_PA_COMITE];
 
 // Classifica o texto livre de "Tipo de Plano de Ação" em um dos 5 indicadores.
 function classificarPlanoAcao(tipoTxt) {
   const t = normaliza(tipoTxt);
   if (t.includes('INSPECAO')) return NOME_IND_PA_INSPECOES;
+  // Também vão para Inspeções: AST, CIPA, Qualimetria e War Room (JB e PB)
+  if (/\bAST\b/.test(t) || /\bCIPA\b/.test(t) || t.includes('QUALIMETRIA') || t.includes('WAR ROOM')) return NOME_IND_PA_INSPECOES;
+  if (t.includes('COMITE')) return NOME_IND_PA_COMITE;
   if (t.includes('ABRANGENCIA')) return NOME_IND_PA_ABRANGENCIA;
   if (t.includes('INCIDENTE') || t.includes('ACIDENTE')) return NOME_IND_PA_ACID_INC;
   if (t.includes('ALARME')) return NOME_IND_PA_SIMULADOS;
@@ -2550,7 +2555,7 @@ async function importarPlanilhaWecheckPlanoAcao(evento) {
     // estava gravado no IP para esse mês (gerência × tipo) e não aparece mais no relatório
     // vira 0 de 0. Só para os meses e unidades que vieram no arquivo.
     try {
-      const PA_NOMES = [NOME_IND_PA_INSPECOES, NOME_IND_PA_SIMULADOS, NOME_IND_PA_ABRANGENCIA, NOME_IND_PA_ACID_INC, NOME_IND_PA_ERGONOMIA];
+      const PA_NOMES = NOMES_IND_PA;
       const indsPA = PA_NOMES.map(acharIndicadorPorNome).filter(Boolean);
       const { data: safrasB } = await sb.from('safras').select('id,ano_ini,ano_fim');
       const safraIdDe = txt => { const m = (txt || '').match(/(\d{4})\s*\/\s*(\d{4})/); if (!m) return null; const s = (safrasB || []).find(x => x.ano_ini === +m[1] && x.ano_fim === +m[2]); return s ? s.id : null; };
@@ -2804,7 +2809,7 @@ async function gravarImportacaoWecheckPA(prontos) {
   // Por isso a limpeza de pendências usa esses 5 IDs sempre, não só os que aparecem na
   // planilha atual — senão pendência de um tipo que "sumiu" do relatório nunca era apagada.
   const { data: indsPA } = await sb.from('indicadores').select('id,nome')
-    .in('nome', [NOME_IND_PA_INSPECOES, NOME_IND_PA_SIMULADOS, NOME_IND_PA_ABRANGENCIA, NOME_IND_PA_ACID_INC, NOME_IND_PA_ERGONOMIA]);
+    .in('nome', NOMES_IND_PA);
   const idsTodosIndicadoresPA = (indsPA || []).map(i => i.id);
 
   const porLancamento = {};
