@@ -209,10 +209,11 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
         </div>
         <fieldset class="modo" id="bloco-setor">
           <legend>Setores da Diretoria de Pessoas (RH/Jurídico/Restaurante/Saúde/Facilities)</legend>
-          <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Separa as <b>pendências</b> por setor. A nota continua a da gerência. Precisa do ATIVOS, que fica guardado neste computador.</p>
+          <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Separa as <b>pendências</b> por setor. A nota continua a da gerência. O setor de cada pessoa vem do ATIVOS, atualizado todo dia no Supabase.</p>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <input type="file" id="f-ativos" accept=".xlsx,.xls,.csv" onchange="carregarAtivosSetor(this)" style="font-size:13px;max-width:260px">
-            <span id="ativos-info" style="font-size:12px;color:var(--muted)"></span>
+            <span id="ativos-info" style="font-size:12px;color:var(--muted)">Carregando o ATIVOS...</span>
+            <details style="font-size:12px"><summary style="cursor:pointer;color:var(--muted)">enviar o arquivo à mão</summary>
+              <input type="file" id="f-ativos" accept=".xlsx,.xls,.csv" onchange="carregarAtivosSetor(this)" style="font-size:12px;margin-top:4px"></details>
           </div>
           <label for="f-setor" style="font-size:13px;font-weight:600">Setor</label>
           <select id="f-setor" style="width:100%" onchange="atualizarResumoSelecao()"><option value="">Todos juntos (como hoje)</option></select>
@@ -836,7 +837,29 @@ function separarPorSetor(dados) {
   });
   return saida;
 }
-try { const salvo = JSON.parse(localStorage.getItem('hub-ativos-setor') || 'null'); setTimeout(() => aplicarAtivosSetor(salvo), 0); } catch (_) {}
+// Lê o ATIVOS da tabela "ativos" do Supabase (enviada todo dia pelo script do computador do SSMA).
+// Se não conseguir, usa o último arquivo enviado à mão neste computador.
+async function carregarAtivosSupabase() {
+  try {
+    const { data, error } = await sb.from('ativos').select('matricula,nome,gerencia,supervisao,atualizado_em').ilike('gerencia', '%pessoas%');
+    if (error) throw error;
+    const porMat = {}, porNome = {}, setores = new Set(); let ultima = '';
+    (data || []).forEach(r => {
+      if (normaliza(ALIASES_GERENCIA[normaliza(r.gerencia)] || r.gerencia) !== normaliza(GER_COM_SETORES)) return;
+      const st = rotSetor(r.supervisao);
+      porMat[String(r.matricula)] = st; porNome[normaliza(r.nome)] = st; setores.add(st);
+      if (r.atualizado_em > ultima) ultima = r.atualizado_em;
+    });
+    if (!setores.size) throw new Error('vazio');
+    aplicarAtivosSetor({ data: new Date(ultima).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) + ' (automático)', porMat, porNome,
+      setores: [...setores].sort((a, b) => a.localeCompare(b, 'pt-BR')) });
+  } catch (e) {
+    let salvo = null; try { salvo = JSON.parse(localStorage.getItem('hub-ativos-setor') || 'null'); } catch (_) {}
+    aplicarAtivosSetor(salvo);
+    if (!salvo) document.getElementById('ativos-info').textContent = 'ATIVOS ainda não disponível no Supabase. Envie o arquivo à mão.';
+  }
+}
+window.addEventListener('load', () => setTimeout(carregarAtivosSupabase, 800));
 
 function modoArquivo() {
   return document.querySelector('input[name="f-modo"]:checked')?.value || 'unico';
