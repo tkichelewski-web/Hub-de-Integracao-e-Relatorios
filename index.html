@@ -62,20 +62,29 @@ main.grade{max-width:1280px;margin:0 auto;padding:24px;display:grid;grid-templat
 @media (max-width:960px){#painel-ppt{position:static}}
 
 /* ── Lista de importações ── */
-.grupo-titulo{margin:18px 0 4px;font-size:14px;font-weight:700;color:var(--tinta)}
-.grupo-desc{margin:0 0 6px;font-size:13px;color:var(--muted)}
-.imp-linha{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--linha)}
-.imp-linha:last-child{border-bottom:none}
-.imp-info{flex:1;min-width:0}
-.imp-nome{font-weight:600;font-size:15px}
-.imp-dica{font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
-.imp-status{font-size:12px;font-weight:600;white-space:normal;line-height:1.3;color:var(--muted)}
-.imp-status.ok{color:var(--ok)}
-.imp-status.atencao{color:#9A6B00}
-.imp-linha .btn{white-space:nowrap}
+.grupo-titulo{margin:22px 0 2px;font-size:12px;font-weight:700;color:var(--verde);text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:8px}
+.grupo-titulo::after{content:'';flex:1;height:1px;background:var(--linha)}
+.grupo-desc{margin:0 0 8px;font-size:13px;color:var(--muted)}
+.imp-linha{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"info botao" "status botao";gap:6px 18px;align-items:center;padding:14px 16px;margin:8px 0;background:#fff;border:1px solid var(--linha);border-radius:10px;transition:border-color .15s,box-shadow .15s}
+.imp-linha:hover{border-color:#B9D3A5;box-shadow:0 2px 10px rgba(7,88,60,.07)}
+.imp-info{grid-area:info;min-width:0}
+.imp-nome{font-weight:700;font-size:15px;color:var(--tinta)}
+.imp-dica{font-size:12.5px;color:var(--muted);line-height:1.4;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.imp-status{grid-area:status;justify-self:start;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;line-height:1.3;color:var(--muted);background:#F2F5F0;border-radius:999px;padding:3px 10px}
+.imp-status::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
+.imp-status:empty{display:none}
+.imp-status.ok{color:var(--ok);background:#EAF5D6}
+.imp-status.atencao{color:#9A6B00;background:#FFF4DB}
+.imp-linha .btn{grid-area:botao;white-space:nowrap;min-width:200px;justify-content:center}
 .imp-destaque{margin-top:18px;padding:14px 16px;border:1px solid var(--lima);background:var(--lima-suave);border-radius:var(--raio)}
 .imp-destaque .imp-linha{border:none;padding:0}
-@media (max-width:560px){.imp-linha{flex-wrap:wrap}.imp-linha .btn{width:100%}}
+@media (max-width:640px){.imp-linha{grid-template-columns:1fr;grid-template-areas:"info" "status" "botao"}.imp-linha .btn{width:100%}}
+#bloco-setor select,#f-setor{padding:9px 11px;border:1px solid var(--linha);border-radius:6px;background:#fff;font:inherit;font-size:14px;margin-top:4px}
+#bloco-setor{background:#F7FAF4;border:1px solid var(--linha)!important;border-radius:10px;padding:12px 14px!important}
+#bloco-setor legend{float:left;width:100%;margin-bottom:6px;color:var(--verde);font-size:13px}
+#bloco-setor legend + *{clear:both}
+.btn-portal{display:inline-flex;align-items:center;gap:6px;color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:7px 14px;font-weight:600;font-size:14px}
+.btn-portal:hover{background:rgba(255,255,255,.12)}
 
 /* ── Log ── */
 .log{margin-top:20px;border-top:1px solid var(--linha);padding-top:14px}
@@ -153,7 +162,8 @@ fieldset.modo input{accent-color:var(--verde);width:17px;height:17px}
         <h1>Hub de Integração e Relatórios</h1>
         <div class="sub">Índice de Prevenção – VIDAS</div>
       </div>
-      <div class="tour-menu" style="margin-left:auto;margin-right:16px">
+      <a class="btn-portal" href="https://tkichelewski-web.github.io/portal-ip/" style="margin-left:auto">← Voltar ao portal</a>
+      <div class="tour-menu" style="margin-right:16px">
         <button type="button" onclick="document.getElementById('tour-opcoes').classList.toggle('aberto')" aria-haspopup="true">❓ Tour guiado</button>
         <div class="tour-opcoes" id="tour-opcoes" role="menu">
           <button type="button" onclick="iniciarTour('importar')">1. Importar Observação e Inspeção</button>
@@ -623,7 +633,7 @@ function renderListaImportacoes() {
     <div class="imp-linha">
       <div class="imp-info">
         <div class="imp-nome">${cfg.titulo}</div>
-        <div class="imp-dica">${cfg.dica}</div>
+        <div class="imp-dica" title="${String(cfg.dica).replace(/"/g, '&quot;')}">${cfg.dica}</div>
       </div>
       <span class="imp-status" id="st-${chave}"></span>
       <button class="btn btn-sec" id="btn-${chave}" onclick="${cfg.acao ? cfg.acao + '()' : `document.getElementById('${cfg.input}').click()`}">
@@ -695,6 +705,14 @@ async function quemSou() {
 }
 const MES_ABREV = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
 const mesCurto = ym => { const [a, m] = String(ym).split('-'); return m ? MES_ABREV[Number(m) - 1] + '/' + a.slice(2) : ym; };
+// "out/26" · "out/26 e nov/26" · "abr/26 a mar/27 (12 meses)"
+function resumoMeses(txt) {
+  const ms = String(txt || '').split(',').map(x => x.trim()).filter(Boolean).sort();
+  if (!ms.length) return '';
+  if (ms.length === 1) return mesCurto(ms[0]);
+  if (ms.length === 2) return mesCurto(ms[0]) + ' e ' + mesCurto(ms[1]);
+  return `${mesCurto(ms[0])} a ${mesCurto(ms[ms.length - 1])} (${ms.length} meses)`;
+}
 async function registrarAtualizacao(chave, tipo, detalhe) {
   const cfg = IMPORTACOES[chave] || {};
   const meses = [..._gravacao.meses].sort();
@@ -735,13 +753,13 @@ async function carregarHistorico() {
     const r = ultima[k];
     if (!r) { st.textContent = 'Ainda não atualizado pelo Hub'; st.className = 'imp-status'; return; }
     const dias = (Date.now() - new Date(r.criado_em)) / 86400000;
-    st.textContent = `Atualizado ${quandoTexto(r.criado_em)} por ${(r.usuario || '').split(' ')[0] || 'alguém'}` + (r.meses ? ` · ${r.meses.split(', ').map(mesCurto).join(', ')}` : '');
+    st.textContent = `Atualizado ${quandoTexto(r.criado_em)} por ${((r.usuario || '').split(' ')[0] || 'alguém').replace(/^(.)(.*)$/, (m, a, b) => a.toUpperCase() + b.toLowerCase())}` + (r.meses ? ` · ${resumoMeses(r.meses)}` : '');
     st.className = 'imp-status ' + (dias <= 7 ? 'ok' : 'atencao');
     st.title = `${r.usuario || ''} · ${new Date(r.criado_em).toLocaleString('pt-BR')}`;
   });
   // Lista das últimas 15
   const lista = (data || []).slice(0, 15);
-  ul.innerHTML = lista.length ? lista.map(r => `<li class="ok"><time>${quandoTexto(r.criado_em)}</time><div><span>${esc(r.fonte)}</span> — ${esc(r.tipo)}${r.meses ? ' de ' + esc(r.meses.split(', ').map(mesCurto).join(', ')) : ''}${r.gerencias ? ' · ' + r.gerencias + ' gerência(s)' : ''}${r.detalhe ? ' · ' + esc(r.detalhe) : ''} <small style="color:var(--muted)">por ${esc(r.usuario || '—')}</small></div></li>`).join('')
+  ul.innerHTML = lista.length ? lista.map(r => `<li class="ok"><time>${quandoTexto(r.criado_em)}</time><div><span>${esc(r.fonte)}</span> — ${esc(r.tipo)}${r.meses ? ' de ' + esc(resumoMeses(r.meses)) : ''}${r.gerencias ? ' · ' + r.gerencias + ' gerência(s)' : ''}${r.detalhe ? ' · ' + esc(r.detalhe) : ''} <small style="color:var(--muted)">por ${esc(r.usuario || '—')}</small></div></li>`).join('')
     : '<li class="vazio">Nenhuma atualização registrada ainda.</li>';
 }
 window.addEventListener('load', () => setTimeout(carregarHistorico, 1200));
