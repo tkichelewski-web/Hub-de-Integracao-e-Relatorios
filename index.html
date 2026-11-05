@@ -1620,6 +1620,9 @@ const ALIASES_GERENCIA = {
   'DIRETORIA DE PESSOAS': 'RH/Jurídico/Restaurante/Saúde/Facilities',
   'SUPERINTENDENCIA': 'Supervisão Excelência e Projetos',
   'SUPERINTENDÊNCIA': 'Supervisão Excelência e Projetos',
+  'SUPERVISOR EXCELENCIA PROJETOS': 'Supervisão Excelência e Projetos',
+  'SUPERVISAO EXCELENCIA PROJETOS': 'Supervisão Excelência e Projetos',
+  'SUPERVISAO EXCELENCIA E PROJETOS': 'Supervisão Excelência e Projetos',
   // As três reportam pra área única cadastrada como "RH/Jurídico/Restaurante/Saúde/Facilities".
   'SUPERVISAO FACILITIES': 'RH/Jurídico/Restaurante/Saúde/Facilities',
   'GERÊNCIA RH': 'RH/Jurídico/Restaurante/Saúde/Facilities',
@@ -6127,7 +6130,7 @@ async function importarPlanilhaTreinamento(evento) {
       const gerNome = (campo(l, ['GERÊNCIA', 'GERENCIA', 'Gerência']) || '').toString().trim();
       const mesTexto = (campo(l, ['MÊS', 'MES', 'Mês']) || '').toString().trim().toLowerCase();
       const num = MESES_PT[mesTexto];
-      const safraTxt = normalizarSafraCurta(campo(l, ['SAFRA/', 'Safra', 'ANO/SAFRA', 'Ano Safra']));
+      const safraTxt = normalizarSafraCurta(campo(l, ['SAFRA', 'SAFRA/', 'Safra', 'ANO/SAFRA', 'Ano Safra', 'ANO SAFRA']));
       const ano = num ? anoDaSafraParaMes(safraTxt, parseInt(num, 10)) : null;
       const mes = (ano && num) ? (ano + '-' + num) : null;
 
@@ -6148,7 +6151,7 @@ async function importarPlanilhaTreinamento(evento) {
 
     const listaGrupos = Object.values(grupos);
     if (!listaGrupos.length) {
-      alert('Não encontrei nenhuma linha válida. Confira se a planilha tem as colunas UNIDADE, GERÊNCIA, MÊS, SAFRA/, PREVISTO, REALIZADO.');
+      alert('Não encontrei nenhuma linha válida. Confira se a planilha tem as colunas UNIDADE, GERÊNCIA, MÊS, SAFRA, PREVISTO, REALIZADO.');
       return;
     }
 
