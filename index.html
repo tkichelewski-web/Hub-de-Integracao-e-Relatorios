@@ -1107,6 +1107,82 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
     indsPorGer[l.gerencia_id] = await getIndsGerencia(l.gerencia_id, safraId);
   }
 
+  const gerIdsTodas = lista.map(l => l.gerencia_id);
+
+  // Histórico da safra (abril até o mês da apresentação) para o slide de evolução
+  progresso(76, 'Buscando a evolução da safra...');
+  const histPorGer = {};
+  try {
+    const mesesHist = mesesDaSafraHub(safraId).filter(m => m <= mes);
+    const lancHist = [];
+    for (let de = 0; ; de += 1000) {
+      const { data, error: eH } = await sbSafe(() => sb.from('lancamentos')
+        .select('id,gerencia_id,mes,periodo,indice_prevencao,pontuacao_gerencia,nota_auditoria,ajuste_pontos,obs_auditoria,tipo_acidente')
+        .in('gerencia_id', gerIdsTodas).range(de, de + 999));
+      if (eH) throw eH;
+      lancHist.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    // Um lançamento por gerência × mês (o mais recente), só meses da safra
+    const ultimo = {};
+    lancHist.forEach(h => {
+      const m = h.mes || h.periodo;
+      if (!mesesHist.includes(m)) return;
+      const k = h.gerencia_id + '|' + m;
+      if (!ultimo[k] || h.id > ultimo[k].id) ultimo[k] = { ...h, mesRef: m };
+    });
+    const escolhidos = Object.values(ultimo);
+    const itensHist = {};
+    const idsHist = escolhidos.map(h => h.id);
+    for (let i = 0; i < idsHist.length; i += 20) {
+      const { data, error: eI } = await sbSafe(() => sb.from('lancamento_itens')
+        .select('lancamento_id,indicador_id,previsto,realizado,nota,sim_nao').in('lancamento_id', idsHist.slice(i, i + 20)));
+      if (eI) throw eI;
+      (data || []).forEach(it => (itensHist[it.lancamento_id] = itensHist[it.lancamento_id] || []).push(it));
+    }
+    escolhidos.forEach(h => {
+      const inds = indsPorGer[h.gerencia_id] || [];
+      const its = (itensHist[h.id] || []).map(x => ({ ...x }));
+      calcPontGer(its, inds);
+      const abaixo = its.filter(it => inds.find(i => i.id === it.indicador_id) && (it.pontuacao || 0) < 100).map(it => {
+        const ind = inds.find(i => i.id === it.indicador_id);
+        return { nome: ind.nome || '', tipo: ind.tipo, prev: Number(it.previsto) || 0, real: Number(it.realizado) || 0, nota: it.nota, pont: it.pontuacao || 0 };
+      }).sort((a, b) => a.pont - b.pont);
+      (histPorGer[h.gerencia_id] = histPorGer[h.gerencia_id] || []).push({
+        mes: h.mesRef, ip: Number(h.indice_prevencao) || 0, aud: h.nota_auditoria, eventos: extrairEventos(h), abaixo
+      });
+    });
+    Object.values(histPorGer).forEach(arr => arr.sort((a, b) => a.mes.localeCompare(b.mes)));
+  } catch (eHist) { console.warn('Evolução da safra não carregada:', eHist.message || eHist); }
+
+  // Simulados do mês e do mês seguinte (Cronograma de Simulados)
+  progresso(78, 'Buscando simulados...');
+  const simPorGer = {};
+  try {
+    const prox = proximoMesHub(mes);
+    const { data: sims, error: eSim } = await sbSafe(() => sb.from('cronograma_simulados')
+      .select('*, simulado_gerencias(gerencia_id)').in('mes_planejado', [mes, prox]).order('mes_planejado').order('id'));
+    if (eSim) throw eSim;
+    (sims || []).forEach(sm => {
+      const gids = (sm.simulado_gerencias || []).map(x => x.gerencia_id);
+      gids.forEach(gid => { if (gerIdsTodas.includes(gid)) (simPorGer[gid] = simPorGer[gid] || []).push({ ...sm, gids, proximo: sm.mes_planejado !== mes }); });
+    });
+  } catch (eS) { console.warn('Simulados não carregados:', eS.message || eS); }
+
+  // Multas do mês (nome, tipo de infração, AIT) — gravadas na importação da Base Multas IP
+  progresso(79, 'Buscando multas...');
+  const multaInd = (indicadores || []).find(i => normaliza(i.nome) === normaliza(NOME_IND_MULTAS));
+  const multaIndId = multaInd ? multaInd.id : null;
+  const multasPorLanc = {};
+  if (multaIndId) {
+    for (let i = 0; i < ids.length; i += 20) {
+      const { data, error: eM } = await sbSafe(() => sb.from('lancamento_pendencias').select('lancamento_id,nome,matricula,status')
+        .in('lancamento_id', ids.slice(i, i + 20)).eq('indicador_id', multaIndId));
+      if (eM) { console.warn('Multas não carregadas:', eM.message); break; }
+      (data || []).forEach(m => (multasPorLanc[m.lancamento_id] = multasPorLanc[m.lancamento_id] || []).push({ nome: m.nome || '', ait: m.matricula || '', tipo: m.status || '' }));
+    }
+  }
+
   const wPG = Number(config?.peso_gerencia) || 0.5;
   const wMD = Number(config?.peso_diretoria) || 0.2;
   const wAUD = Number(config?.peso_auditoria) || 0.3;
@@ -1125,7 +1201,8 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
       // Só aponta pendência em indicador que não bateu 100% (igual ao sistema principal)
       // Coaching tem slide próprio ("Coaching do semestre"), então não repete aqui
       const ehCoaching = /COACHING/.test(normaliza(ind.nome || ''));
-      const pendItem = (!ehCoaching && (it.pontuacao || 0) < 100) ? (pendPorItem[l.id + '|' + it.indicador_id] || []) : [];
+      const ehMulta = multaIndId && it.indicador_id === multaIndId; // multas têm slide próprio
+      const pendItem = (!ehCoaching && !ehMulta && (it.pontuacao || 0) < 100) ? (pendPorItem[l.id + '|' + it.indicador_id] || []) : [];
       pendItem.forEach(p => pendencias.push({
         indicador: ind.nome || ('Indicador ' + it.indicador_id),
         nome: p.nome || '', cargo: p.cargo || '', matricula: p.matricula || '', status: p.status || ''
@@ -1176,7 +1253,11 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
         (/ATRAS/.test(normaliza(b.status)) - /ATRAS/.test(normaliza(a.status))) ||
         a.indicador.localeCompare(b.indicador, 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR')),
       pgTabela: linhas.reduce((s, r) => s + r.contrib, 0),
-      coaching: coachPorGer[l.gerencia_id] || null
+      coaching: coachPorGer[l.gerencia_id] || null,
+      historico: histPorGer[l.gerencia_id] || [],
+      simulados: simPorGer[l.gerencia_id] || [],
+      multas: (multasPorLanc[l.id] || []).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')),
+      mes
     };
   });
 }
@@ -1425,7 +1506,289 @@ function slidesCoachingSemestre(pptx, g, info) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Auxiliares de mês
+// ─────────────────────────────────────────────────────────────
+const MES_EXT = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const MES_ABR = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const mesExt = ym => MES_EXT[Number(ym.slice(5, 7)) - 1];
+const mesAbr = ym => MES_ABR[Number(ym.slice(5, 7)) - 1] + '/' + ym.slice(2, 4);
+const capital = t => t ? t[0].toUpperCase() + t.slice(1) : t;
+function mesesDaSafraHub(safraId) {
+  const sf = safrasData.find(x => x.id === safraId);
+  if (!sf) return [];
+  const a = Number(sf.ano_ini), out = [];
+  for (let i = 0; i < 12; i++) { const m = 4 + i, ano = m > 12 ? a + 1 : a; out.push(ano + '-' + String(m > 12 ? m - 12 : m).padStart(2, '0')); }
+  return out;
+}
+function proximoMesHub(ym) {
+  let [a, m] = ym.split('-').map(Number); m++; if (m > 12) { m = 1; a++; }
+  return a + '-' + String(m).padStart(2, '0');
+}
+const fimDoMesHub = ym => { const [a, m] = ym.split('-').map(Number); return ym + '-' + String(new Date(a, m, 0).getDate()).padStart(2, '0'); };
+const dataBR = d => d ? d.slice(0, 10).split('-').reverse().join('/') : '';
+
+// ─────────────────────────────────────────────────────────────
+// Análise automática da evolução (regras pelo nome do indicador)
+// ─────────────────────────────────────────────────────────────
+const EV_VALOR = { iap: -5, asa: -10, aca: -15, fatalidade: -30 };
+const EV_SIGLA = { iap: 'IAP', asa: 'ASA', aca: 'ACA', fatalidade: 'Fatalidade' };
+const ehIncidente = ev => ev.tipo === 'incidente';
+function rotuloInd(nome) {
+  const n = normaliza(nome);
+  if (/MULTA|INFRAC|CONDUTOR/.test(n)) return 'multas de trânsito';
+  if (/OBSERVA/.test(n)) return 'observação';
+  if (/INSPE/.test(n)) return 'inspeção';
+  if (/PLANO DE ACAO|PLANOS DE ACAO|ACOES|ACAO/.test(n)) return 'plano de ação';
+  if (/SIMULADO/.test(n)) return 'simulado';
+  if (/COACHING/.test(n)) return 'coaching';
+  if (/EXAME|ASO|PERIODIC/.test(n)) return 'exames periódicos';
+  if (/TREINA|CAPACITA/.test(n)) return 'treinamentos';
+  if (/DSSMA|DDS/.test(n)) return 'DSSMA';
+  if (/REGRA/.test(n)) return 'Regras que Salvam Vidas';
+  return nome.length > 45 ? nome.slice(0, 43) + '…' : nome;
+}
+function fraseInd(a) {
+  const n = normaliza(a.nome);
+  const q = a.tipo === 'previsto_realizado' && a.prev > 0 ? ` (${fmtNum(a.real)} de ${fmtNum(a.prev)})`
+          : a.tipo === 'nota' && a.nota != null ? ` (nota ${fmtNum(a.nota)})` : '';
+  if (/MULTA|INFRAC|CONDUTOR/.test(n)) return a.real > 0 ? `${a.real} multa(s) de trânsito` : 'multa de trânsito';
+  if (/OBSERVA/.test(n)) return 'deixaram de fazer observação' + q;
+  if (/INSPE/.test(n)) return 'deixaram de fazer inspeção' + q;
+  if (/PLANO DE ACAO|PLANOS DE ACAO|ACOES|ACAO/.test(n)) return 'não concluíram ações do plano de ação' + q;
+  if (/SIMULADO/.test(n)) return 'simulado não realizado' + q;
+  if (/COACHING/.test(n)) return 'coaching pendente' + q;
+  if (/EXAME|ASO|PERIODIC/.test(n)) return 'exames periódicos em atraso' + q;
+  if (/TREINA|CAPACITA/.test(n)) return 'treinamentos pendentes' + q;
+  if (/DSSMA|DDS/.test(n)) return 'DSSMA não realizado' + q;
+  if (/REGRA/.test(n)) return 'desvios em Regras que Salvam Vidas' + q;
+  return rotuloInd(a.nome) + ' abaixo da meta' + q;
+}
+const fraseEvento = ev => `${ehIncidente(ev) ? 'incidente' : 'acidente'} ${EV_SIGLA[ev.classe] || ev.classe} (${EV_VALOR[ev.classe] || 0} pontos)`;
+function causasDoMes(h, anterior) {
+  const partes = h.eventos.map(fraseEvento).concat(h.abaixo.slice(0, 3).map(fraseInd));
+  if (anterior && h.aud != null && anterior.aud != null && Number(h.aud) < Number(anterior.aud) - 0.5)
+    partes.push(`nota de auditoria caiu de ${fmt(anterior.aud)} para ${fmt(h.aud)}`);
+  if (!partes.length) return '';
+  return partes.length > 1 ? partes.slice(0, -1).join(', ') + ' e ' + partes[partes.length - 1] : partes[0];
+}
+function analisarEvolucao(hist) {
+  const out = [];
+  if (!hist.length) return out;
+  const atual = hist[hist.length - 1], ant = hist.length > 1 ? hist[hist.length - 2] : null;
+  // Mês atual
+  const causasA = causasDoMes(atual, ant);
+  if (ant) {
+    const dif = atual.ip - ant.ip;
+    out.push({ tit: `${capital(mesExt(atual.mes))} (${dif >= 0 ? '+' : '−'}${fmt(Math.abs(dif))}):`,
+      txt: causasA ? causasA + '.' : (dif < 0 ? 'todos os indicadores da gerência em 100%; a queda veio da auditoria ou da média da diretoria.' : 'todos os indicadores em 100% e sem acidente.'),
+      cor: dif < 0 || causasA ? COR.atencao : COR.verde });
+  } else {
+    out.push({ tit: `${capital(mesExt(atual.mes))} (${fmt(atual.ip)}):`, txt: causasA ? causasA + '.' : 'todos os indicadores em 100% e sem acidente.', cor: causasA ? COR.atencao : COR.verde });
+  }
+  if (hist.length < 2) return out;
+  // Pior mês
+  const pior = hist.reduce((a, b) => b.ip < a.ip ? b : a);
+  if (pior !== atual) {
+    const iP = hist.indexOf(pior);
+    const c = causasDoMes(pior, iP > 0 ? hist[iP - 1] : null);
+    out.push({ tit: `${capital(mesExt(pior.mes))}, pior mês (${fmt(pior.ip)}):`, txt: (c || 'indicadores em 100%; a nota veio da auditoria ou da média da diretoria') + '.', cor: COR.atencao });
+  }
+  // O que se repete
+  const cont = {};
+  hist.forEach(h => new Set(h.abaixo.map(a => rotuloInd(a.nome))).forEach(r => { cont[r] = (cont[r] || 0) + 1; }));
+  const rep = Object.entries(cont).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2);
+  if (rep.length) out.push({ tit: 'O que se repete:', txt: rep.map(([r, n]) => `${r} abaixo de 100% em ${n} dos ${hist.length} meses`).join('; ') + '.', cor: COR.minimo });
+  // Melhor mês
+  const melhor = hist.reduce((a, b) => b.ip > a.ip ? b : a);
+  if (melhor !== atual || out.length < 3) {
+    const extras = [];
+    if (!melhor.abaixo.length) extras.push('todos os indicadores em 100%');
+    if (!melhor.eventos.length) extras.push('sem acidente');
+    out.push({ tit: `Melhor mês (${fmt(melhor.ip)}):`, txt: mesExt(melhor.mes) + (extras.length ? ', com ' + extras.join(' e ') : '') + '.', cor: COR.verde });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Slide 1 da gerência: evolução na safra
+// ─────────────────────────────────────────────────────────────
+function slideEvolucao(pptx, g, info) {
+  const hist = g.historico || [];
+  if (!hist.length) return;
+  const s = pptx.addSlide();
+  cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — evolução na safra' }, info, false);
+
+  const ips = hist.map(h => h.ip);
+  const acum = ips.map((_, i) => ips.slice(0, i + 1).reduce((a, b) => a + b, 0) / (i + 1));
+  const atual = hist[hist.length - 1], ant = hist.length > 1 ? hist[hist.length - 2] : null;
+  const acumAtual = acum[acum.length - 1];
+
+  // Cartões
+  const st = statusIP(atual.ip);
+  s.addShape(pptx.ShapeType.rect, { x: 0.5, y: CARD_Y, w: 3.0, h: CARD_H, fill: { color: st.cor }, line: { color: st.cor } });
+  s.addText(`IP DO MÊS (${mesExt(atual.mes).toUpperCase()})`, { x: 0.65, y: CARD_Y + 0.05, w: 2.7, h: 0.22, fontFace: FONTE, fontSize: 9, bold: true, color: 'FFFFFF', margin: 0 });
+  s.addText(fmt(atual.ip), { x: 0.65, y: CARD_Y + 0.25, w: 1.4, h: 0.5, fontFace: FONTE, fontSize: 26, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle' });
+  s.addText(st.label, { x: 1.9, y: CARD_Y + 0.25, w: 1.5, h: 0.5, fontFace: FONTE, fontSize: 11, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle', align: 'right', fit: 'shrink' });
+  if (ant) {
+    const dif = atual.ip - ant.ip;
+    cardKPI(pptx, s, 3.65, 3.0, 'Variação x mês anterior', (dif >= 0 ? '+' : '') + fmt(dif), `${capital(mesExt(ant.mes))}: ${fmt(ant.ip)}`, dif >= 0 ? COR.verde : COR.atencao);
+  } else {
+    cardKPI(pptx, s, 3.65, 3.0, 'Variação x mês anterior', '—', 'Primeiro mês apurado na safra');
+  }
+  cardKPI(pptx, s, 6.8, 3.0, 'IP acumulado da safra', fmt(acumAtual), `Média de ${mesExt(hist[0].mes)} a ${mesExt(atual.mes)} (${hist.length} ${hist.length > 1 ? 'meses' : 'mês'})`, statusIP(acumAtual).cor);
+  const nAc = hist.reduce((n, h) => n + h.eventos.filter(e => !ehIncidente(e)).length, 0);
+  const nInc = hist.reduce((n, h) => n + h.eventos.filter(ehIncidente).length, 0);
+  const ondeEv = hist.filter(h => h.eventos.length).map(h => h.eventos.map(e => EV_SIGLA[e.classe] || e.classe).join('+') + ' em ' + MES_ABR[Number(h.mes.slice(5, 7)) - 1].toLowerCase()).join(' · ');
+  cardKPI(pptx, s, 9.95, 2.88, 'Acidentes / incidentes na safra', `${nAc} / ${nInc}`, ondeEv || 'Nenhum registrado na safra', nAc || nInc ? COR.atencao : COR.verde);
+
+  // Gráfico do IP do mês, colorido pela faixa
+  const meses = hist.map(h => mesAbr(h.mes));
+  const faixas = [['Máximo', COR.maximo, v => v >= 100], ['Meta', COR.meta, v => v >= (config.faixa_meta || 90) && v < 100],
+                  ['Mínimo', COR.minimo, v => v >= (config.faixa_critico || 80) && v < (config.faixa_meta || 90)], ['Ponto de Atenção', COR.atencao, v => v < (config.faixa_critico || 80)]];
+  s.addChart(pptx.ChartType.bar, faixas.map(([n, , f]) => ({ name: n, labels: meses, values: ips.map(v => f(v) ? Math.round(v * 10) / 10 : 0) })), {
+    x: 0.4, y: 2.15, w: 7.7, h: 2.75, barDir: 'col', barGrouping: 'stacked',
+    chartColors: faixas.map(f => f[1]), showValue: true, dataLabelPosition: 'inEnd', dataLabelFormatCode: '0.0;;;',
+    dataLabelFontSize: hist.length > 9 ? 8 : 10, dataLabelFontBold: true, dataLabelFontFace: FONTE, dataLabelColor: 'FFFFFF',
+    valAxisMinVal: 0, valAxisMaxVal: 105, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' },
+    catAxisLabelFontFace: FONTE, catAxisLabelFontSize: 9, catAxisLabelColor: COR.muted,
+    showLegend: true, legendPos: 't', legendFontFace: FONTE, legendFontSize: 8,
+    showTitle: true, title: 'IP do mês', titleFontFace: FONTE, titleFontSize: 10, titleColor: COR.muted, barGapWidthPct: 50
+  });
+
+  // Análise
+  const ax = 8.3, aw = 4.53, ay = 2.2, ah = 2.7;
+  s.addShape(pptx.ShapeType.rect, { x: ax, y: ay, w: aw, h: ah, fill: { color: COR.fundoCard }, line: { color: COR.linha, width: 0.75 } });
+  s.addShape(pptx.ShapeType.rect, { x: ax, y: ay, w: aw, h: 0.32, fill: { color: COR.verde }, line: { color: COR.verde } });
+  s.addText('ANÁLISE DO PERÍODO', { x: ax + 0.15, y: ay, w: aw - 0.3, h: 0.32, fontFace: FONTE, fontSize: 10, bold: true, color: 'FFFFFF', margin: 0, valign: 'middle' });
+  const runs = [];
+  analisarEvolucao(hist).forEach((a, i, arr) => {
+    runs.push({ text: a.tit + ' ', options: { bold: true, color: a.cor } });
+    runs.push({ text: a.txt, options: { color: COR.tinta, breakLine: i < arr.length - 1 } });
+  });
+  s.addText(runs, { x: ax + 0.1, y: ay + 0.38, w: aw - 0.2, h: ah - 0.45, fontFace: FONTE, fontSize: 9.5, valign: 'top', margin: 2, paraSpaceAfter: 8, fit: 'shrink' });
+
+  // Tabela mês a mês
+  const n = hist.length, largura = 10 / Math.max(n, 1), pequeno = n > 8;
+  const hdrT = (t, al = 'center') => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: al } });
+  const rotSit = v => { const l = statusIP(v).label; return pequeno && l === 'Ponto de Atenção' ? 'Atenção' : l; };
+  const lin = (rot, arr, f, cor) => [{ text: rot, options: { bold: true, color: COR.muted } },
+    ...arr.map(v => ({ text: f(v), options: { align: 'center', color: cor ? cor(v) : COR.tinta, bold: !!cor } }))];
+  const evTxt = (h, inc) => { const e = h.eventos.filter(x => ehIncidente(x) === inc); if (!e.length) return '—';
+    const c = {}; e.forEach(x => { const k = EV_SIGLA[x.classe] || x.classe; c[k] = (c[k] || 0) + 1; });
+    return Object.entries(c).map(([k, q]) => q + ' ' + k).join(' + '); };
+  const rows = [[hdrT('Mês', 'left'), ...meses.map(m => hdrT(m))]];
+  rows.push(lin('IP acumulado', acum, v => fmt(v), v => statusIP(v).cor));
+  rows.push(lin('Situação acumulada', acum, rotSit, v => statusIP(v).cor));
+  rows.push(lin('Acidentes', hist.map(h => evTxt(h, false)), v => v, v => v === '—' ? COR.muted : COR.atencao));
+  rows.push(lin('Incidentes', hist.map(h => evTxt(h, true)), v => v, v => v === '—' ? COR.muted : COR.minimo));
+  rows.push(lin('Indicadores < 100%', hist.map(h => h.abaixo.length), v => v ? String(v) : 'nenhum', v => v ? COR.atencao : COR.verde));
+  rows.forEach((r, i) => { if (i % 2 === 0 && i > 0) r.forEach(c => { c.options.fill = { color: COR.zebra }; }); });
+  s.addTable(rows, { x: 0.5, y: 5.05, w: 12.33, colW: [2.33, ...meses.map(() => largura)], rowH: 0.28,
+    fontFace: FONTE, fontSize: pequeno ? 8 : 9, color: COR.tinta, valign: 'middle', border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [1, 4, 1, 4] });
+  s.addText('ASA = acidente sem afastamento · ACA = acidente com afastamento · IAP = incidente de alto potencial · IP acumulado = média dos meses da safra até o mês',
+    { x: 0.5, y: 6.8, w: 12.33, h: 0.22, fontFace: FONTE, fontSize: 8, italic: true, color: COR.muted, margin: 0 });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Simulados de emergência (mês da apresentação + planejados do mês seguinte)
+// ─────────────────────────────────────────────────────────────
+const SIM_POR_SLIDE = 3;
+function corSimulado(sm) {
+  return { Realizado: COR.verde, Agendado: COR.minimo, Reprogramado: COR.minimo, Cancelado: COR.atencao }[sm.status] || COR.muted;
+}
+function slidesSimulados(pptx, g, info) {
+  const lista = g.simulados || [];
+  if (!lista.length) return;
+  const doMes = lista.filter(x => !x.proximo), prox = lista.filter(x => x.proximo);
+  const fim = fimDoMesHub(g.mes);
+  const realiz = doMes.filter(x => x.status === 'Realizado' && x.data_realizada && x.data_realizada <= fim).length;
+  const nomeUniSim = id => (estrutura.unidades.find(u => u.id === id) || {}).nome || '';
+  const nomeGerSim = id => (estrutura.gerencias.find(x => x.id === id) || {}).nome || '';
+
+  for (let i = 0; i < lista.length; i += SIM_POR_SLIDE) {
+    const s = pptx.addSlide();
+    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — simulados de emergência' }, info, i > 0);
+    const resumo = [];
+    if (doMes.length) {
+      const agend = doMes.filter(x => ['Agendado', 'Reprogramado'].includes(x.status)).length;
+      resumo.push({ text: `${capital(mesExt(g.mes))}: ${realiz} de ${doMes.length} realizado(s) no mês`, options: { bold: true, color: realiz === doMes.length ? COR.verde : COR.atencao } });
+      if (agend) resumo.push({ text: `   |   ${agend} agendado(s)`, options: { color: COR.muted } });
+    } else {
+      resumo.push({ text: `Sem simulado planejado em ${mesExt(g.mes)}`, options: { bold: true, color: COR.muted } });
+    }
+    if (prox.length) resumo.push({ text: `   |   próximos: ${prox.length} em ${mesExt(prox[0].mes_planejado)}`, options: { color: COR.muted } });
+    s.addText(resumo, { x: 0.5, y: 1.22, w: 12.33, h: 0.35, fontFace: FONTE, fontSize: 12, margin: 0, valign: 'middle' });
+
+    lista.slice(i, i + SIM_POR_SLIDE).forEach((sm, k) => {
+      const y = 1.75 + k * 1.65, cor = corSimulado(sm);
+      s.addShape(pptx.ShapeType.rect, { x: 0.5, y, w: 12.33, h: 1.5, fill: { color: k % 2 ? 'FFFFFF' : COR.fundoCard }, line: { color: COR.linha, width: 0.75 } });
+      s.addShape(pptx.ShapeType.rect, { x: 0.5, y, w: 0.08, h: 1.5, fill: { color: cor }, line: { color: cor } });
+      const uni = nomeUniSim(sm.unidade_id);
+      s.addText(sm.cenario + (uni ? `  (${uni})` : ''), { x: 0.75, y: y + 0.1, w: 9.6, h: 0.4, fontFace: FONTE, fontSize: 16, bold: true, color: COR.tinta, margin: 0, valign: 'middle', fit: 'shrink' });
+      const fora = sm.status === 'Realizado' && sm.data_realizada && sm.data_realizada > fimDoMesHub(sm.mes_planejado);
+      s.addText((sm.status + (fora ? ' fora do mês' : '')).toUpperCase(), { x: 10.6, y: y + 0.13, w: 2.05, h: 0.34, fontFace: FONTE, fontSize: 10, bold: true, color: 'FFFFFF', fill: { color: fora ? COR.atencao : cor }, align: 'center', valign: 'middle', margin: 0, fit: 'shrink' });
+
+      const onde = sm.local || (sm.areas && sm.areas.length ? 'Área: ' + sm.areas.join(', ') : '—');
+      let quando;
+      if (sm.status === 'Realizado') quando = 'Realizado em ' + dataBR(sm.data_realizada);
+      else if (sm.data_agendada) quando = dataBR(sm.data_agendada) + (sm.hora_agendada ? ' às ' + sm.hora_agendada.slice(0, 5) : '');
+      else quando = `Data a definir (mês planejado: ${mesExt(sm.mes_planejado)})`;
+      let det;
+      if (sm.status === 'Realizado') det = [sm.participantes ? sm.participantes + ' participantes' : '', sm.tempo_resposta_min ? 'resposta ' + fmtNum(sm.tempo_resposta_min) + ' min' : ''].filter(Boolean).join(' · ') || 'Baixa registrada';
+      else if (sm.status === 'Cancelado') det = sm.motivo ? 'Motivo: ' + sm.motivo : 'Cancelado';
+      else det = 'Gerências: ' + (sm.gids.map(nomeGerSim).filter(Boolean).join(', ') || '—') + (sm.motivo && sm.status === 'Reprogramado' ? ' · Motivo: ' + sm.motivo : '');
+
+      const campos = [['ONDE', onde], ['QUANDO', quando], ['TIPO', sm.tipo || '—'], ['INFORMAÇÕES', det]];
+      const ws = [3.9, 2.3, 2.6, 3.15]; let cx = 0.75;
+      campos.forEach(([r, v], j) => {
+        s.addText(r, { x: cx, y: y + 0.62, w: ws[j] - 0.15, h: 0.22, fontFace: FONTE, fontSize: 8, bold: true, color: COR.muted, margin: 0 });
+        s.addText(v, { x: cx, y: y + 0.86, w: ws[j] - 0.15, h: 0.55, fontFace: FONTE, fontSize: 11, color: COR.tinta, margin: 0, valign: 'top', fit: 'shrink' });
+        cx += ws[j];
+      });
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Multas de trânsito do mês (nome, tipo de infração, AIT)
+// ─────────────────────────────────────────────────────────────
+const MULTAS_POR_SLIDE = 13;
+function slidesMultas(pptx, g, info) {
+  const lista = g.multas || [];
+  if (!lista.length) return;
+  const porNome = {};
+  lista.forEach(m => { const k = normaliza(m.nome); if (k) porNome[k] = (porNome[k] || 0) + 1; });
+  const reinc = lista.filter((m, i, arr) => porNome[normaliza(m.nome)] > 1 && arr.findIndex(x => normaliza(x.nome) === normaliza(m.nome)) === i)
+    .map(m => `${m.nome} (${porNome[normaliza(m.nome)]} multas)`);
+  for (let i = 0; i < lista.length; i += MULTAS_POR_SLIDE) {
+    const pag = lista.slice(i, i + MULTAS_POR_SLIDE);
+    const s = pptx.addSlide();
+    cabecalhoGerencia(pptx, s, { ...g, gerNome: g.gerNome + ' — multas de trânsito' }, info, i > 0);
+    s.addText([
+      { text: `${lista.length} multa(s) com IP = SIM em ${mesExt(g.mes)}`, options: { bold: true, color: COR.atencao } },
+      { text: `   |   indicador "${NOME_IND_MULTAS}" zerado no mês`, options: { color: COR.muted } }
+    ], { x: 0.5, y: 1.22, w: 12.33, h: 0.35, fontFace: FONTE, fontSize: 12, margin: 0, valign: 'middle' });
+    const hdrM = (t, al = 'left') => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: COR.verde }, align: al } });
+    const rows = [[hdrM('Condutor'), hdrM('Tipo de infração'), hdrM('AIT', 'center')]];
+    pag.forEach((m, k) => {
+      const fill = { color: k % 2 ? COR.zebra : 'FFFFFF' };
+      const ehReinc = porNome[normaliza(m.nome)] > 1;
+      rows.push([
+        { text: m.nome || '—', options: { fill, bold: true, color: ehReinc ? COR.atencao : COR.tinta } },
+        { text: m.tipo || '—', options: { fill } },
+        { text: m.ait || '—', options: { fill, align: 'center', color: COR.muted } }
+      ]);
+    });
+    s.addTable(rows, { x: 0.5, y: 1.7, w: 12.33, colW: [3.6, 7.13, 1.6], rowH: 0.34, fontFace: FONTE, fontSize: 10.5, color: COR.tinta, valign: 'middle',
+      border: { type: 'solid', pt: 0.5, color: COR.linha }, margin: [2, 6, 2, 6] });
+    if (reinc.length && i + MULTAS_POR_SLIDE >= lista.length)
+      s.addText('Reincidente(s) no mês: ' + reinc.join(', ') + '.', { x: 0.5, y: 6.55, w: 12.33, h: 0.3, fontFace: FONTE, fontSize: 10, italic: true, color: COR.atencao, margin: 0, fit: 'shrink' });
+  }
+}
+
 function slidesGerencia(pptx, g, info) {
+  slideEvolucao(pptx, g, info);
   const paginas = [];
   for (let i = 0; i < g.linhas.length; i += LINHAS_POR_SLIDE) paginas.push(g.linhas.slice(i, i + LINHAS_POR_SLIDE));
   if (!paginas.length) paginas.push([]);
@@ -1453,6 +1816,8 @@ function slidesGerencia(pptx, g, info) {
   });
 
   slidesPendencias(pptx, g, info);
+  slidesSimulados(pptx, g, info);
+  slidesMultas(pptx, g, info);
   slidesCoachingSemestre(pptx, g, info);
 }
 
