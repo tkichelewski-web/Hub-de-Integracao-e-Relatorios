@@ -1018,6 +1018,21 @@ function progresso(pct, texto) {
   document.getElementById('progresso-texto').textContent = texto;
 }
 
+// "A realizar até 31/12" só é pendência quando o prazo cai dentro do mês do lançamento
+// (ou já passou). Se o prazo é depois do fim do mês, a pessoa ainda está no prazo:
+// o status vira "No prazo até 31/12" e não aparece em Pendências em Aberto nem no PPT.
+function statusComPrazo(st, mes) {
+  const m = String(st || '').match(/a\s+realizar\s+at[eé]\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i);
+  if (!m || !mes) return st;
+  const [a, mm] = mes.split('-').map(Number);
+  const dia = Number(m[1]), mesPrazo = Number(m[2]);
+  const ano = m[3] ? Number(m[3].length === 2 ? '20' + m[3] : m[3]) : (mesPrazo - mm < -6 ? a + 1 : mesPrazo - mm > 6 ? a - 1 : a); // ano mais próximo do mês do lançamento
+  const prazo = ano + '-' + String(mesPrazo).padStart(2, '0') + '-' + String(dia).padStart(2, '0');
+  const ultimo = new Date(a, mm, 0).getDate();
+  const fimMes = mes + '-' + String(ultimo).padStart(2, '0');
+  return prazo > fimMes ? st.replace(/a\s+realizar/i, 'No prazo') : st;
+}
+
 async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
   progresso(5, 'Buscando lançamentos do mês...');
   const { data: lancs, error } = await sbSafe(() =>
@@ -1064,6 +1079,7 @@ async function coletarDadosApresentacao(safraId, mes, dirId, gerIds) {
       if (e3) { console.warn('Pendências não carregadas:', e3.message); break; }
       (data || []).forEach(p => {
         if (!/pendente|atrasad|andamento|a realizar/i.test(p.status || '')) return;
+        if (/^no prazo/i.test(statusComPrazo(p.status, mes))) return; // prazo depois do mês: ainda não é pendência
         const k = p.lancamento_id + '|' + p.indicador_id;
         (pendPorItem[k] = pendPorItem[k] || []).push(p);
       });
@@ -2102,7 +2118,7 @@ async function importarPlanilhaWecheckInspecoes(evento) {
         nome: (campo(l, ['NOME']) || '').toString().trim(),
         cargo: (campo(l, ['CARGO']) || '').toString().trim(),
         matricula: (campo(l, ['MATRICULA', 'Matrícula']) || '').toString().trim(),
-        status: (campo(l, ['STATUS']) || '').toString().replace(/^●\s*/, '').trim()
+        status: statusComPrazo((campo(l, ['STATUS']) || '').toString().replace(/^●\s*/, '').trim(), mes)
       });
     });
 
@@ -2496,7 +2512,7 @@ async function importarPlanilhaWecheckObservacoes(evento) {
         nome: (campo(l, ['NOME']) || '').toString().trim(),
         cargo: (campo(l, ['CARGO']) || '').toString().trim(),
         matricula: (campo(l, ['MATRICULA', 'Matrícula']) || '').toString().trim(),
-        status: (campo(l, ['STATUS']) || '').toString().replace(/^●\s*/, '').trim()
+        status: statusComPrazo((campo(l, ['STATUS']) || '').toString().replace(/^●\s*/, '').trim(), mes)
       });
     });
 
